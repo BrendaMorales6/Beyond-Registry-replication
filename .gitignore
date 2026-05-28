@@ -1,0 +1,40 @@
+# R / RStudio session files
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# Local environment files
+.Renviron
+renv/library/
+renv/staging/
+
+# Restricted or locally supplied data.
+# Remove or revise this rule only after the anonymised public database is released.
+data/*
+!data/README.md
+!data/.gitkeep
+
+# Generated model output and figures
+output/*
+!output/.gitkeep
+*.rds
+*_estimates.csv
+*_output.txt
+*_additional_output.txt
+SemConstructs*.xlsx
+LC_*.pdf
+*.tiff
+*.png
+
+# Rendered documents generated from the analysis
+*.html
+*.log
+*.aux
+*.out
+*.toc
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
