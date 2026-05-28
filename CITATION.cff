@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this repository, please cite it and the associated paper."
+title: "Beyond the Registry: Replication Code"
+authors:
+  - family-names: "Morales"
+    given-names: "Brenda"
+  - family-names: "Ovando"
+    given-names: "Paola"
+year: 2026
+repository-code: "https://github.com/BrendaMorales6/Beyond-Registry-replication"
+license: "CC-BY-4.0"
+preferred-citation:
+  type: article
+  authors:
+    - family-names: "Morales"
+      given-names: "Brenda"
+    - family-names: "Ovando"
+      given-names: "Paola"
+  title: "Beyond the Registry: Corporate Motivations and Preferences for Forest Carbon Offsets in Spain"
+  year: 2026
