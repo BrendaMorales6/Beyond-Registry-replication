@@ -17,6 +17,7 @@ The paper studies corporate engagement with forest carbon offsets in Spain, comp
 ├── output/
 │   └── .gitkeep
 ├── .gitignore
+├── CITATION.cff
 ├── LICENSE
 ├── README.md
 ├── REFERENCES.md
@@ -100,4 +101,6 @@ When the database is published, cite it using the final archive DOI or repositor
 
 ## License
 
-The code is released under the MIT License. This licence applies to the software/code only. The future database should be released under a separate data licence, such as CC BY 4.0 if reuse with attribution is intended, or CC BY-NC 4.0 if non-commercial reuse is required.
+This repository is released under the Creative Commons Attribution 4.0 International License (CC BY 4.0). Reuse is permitted with attribution. If you use this repository in academic work, software, teaching materials, reports, or derivative analyses, cite this repository and the associated paper where relevant.
+
+The future database should include its own data citation and licence when released.
