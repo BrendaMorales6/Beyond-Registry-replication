@@ -1,0 +1,3578 @@
+---
+title: "Beyond_CompleteCode"
+author: "Brenda Morales"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+## Libraries' importation
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(tibble)
+library(ggplot2)
+library(MASS)
+library(writexl)
+library(scales)
+library(patchwork)
+library(apollo)
+library(readxl)
+library(psych)
+library(car)
+library(lavaan)
+library(semPlot)
+library(gridExtra)
+library(semTools)
+library(mvnfast)
+library(parameters)
+library(MVN)
+library(plspm)
+library(gmnl)
+
+```
+
+## Data importation
+
+```{r}
+data_path <- file.path("data", "Analisis.xlsx")
+
+if (!file.exists(data_path)) {
+  stop("Data file not found. Place the restricted workbook at data/Analisis.xlsx before running the analysis.")
+}
+
+# Measurement model data used in the PLS-SEM sections.
+RHC <- read_excel(data_path, sheet = "RHC")
+Spain <- read_excel(data_path, sheet = "Spain")
+```
+
+# Partial Least Squares - Measurement models
+## Registry sample
+
+### Internal consistency
+```{r}
+psych::alpha((RHC[10:28]))
+```
+
+### Confirmatory Factor Analysis
+
+#### KMO and Fligner-Killeen test
+
+```{r}
+KMO((RHC[10:27]))
+fligner.test((RHC[10:27]))
+```
+#### Factor loadings
+
+```{r}
+scree((RHC[10:26]), main="Sediment graph")
+#Factor loadings
+Behaviour <- psych::fa(RHC[10:26], nfactor = 3,rotate = "varimax", fm="pa") %>%
+model_parameters(sort = TRUE, threshold = "max")
+
+```
+### Measurement model
+
+```{r}
+
+path_matrix <- rbind(
+  c(0, 0, 0, 0, 0), # Risk
+  c(1, 0, 0, 0, 0), # Attitudes
+  c(0, 1, 0, 0, 0), # PerceivedBehavC
+  c(0, 0, 0, 0, 0), # SubjectiveNorms
+  c(1, 1, 1, 1, 0)  # Behaviour
+)
+
+#first stage
+colnames(path_matrix) <- rownames(path_matrix) <- c("Risk", "Attitudes", "PerceivedBehavC",   "SubjectiveNorms", "Behaviour")
+
+# Measure model
+#1st stage
+blocks1 <- list(
+ c("Rsk1", "Rsk2", "Rsk3", "Rsk4"),  # Risk
+  c("Att1", "Att2", "Att3", "Att4"), # Attitudes: Att3 shows high load in PBC so we delete it
+  c( "Pbc1", "Pbc2", "Pbc3", "Pbc4"), # PerceivedBehavC: PBC2 shows very low loading in PBC and higher in Risk (delete)
+  c("Sn1", "Sn2", "Sn3"),       # SubjectiveNorms
+  c("DecIntention", "Offset", "PastRedAction")                        # Behaviour
+)
+
+#2nd stage
+blocks2 <- list(
+  c( "Rsk2", "Rsk3", "Rsk4"), # Risk: Risk1 has low load but not high in any other construct (must check AVE and Fornell Larcker to see if Risk is well adjust)
+  c("Att1",  "Att2", "Att4"), # Attitudes: Att3 shows high load in PBC so we delete it
+  c("Pbc1", "Pbc3", "Pbc4"),         # PerceivedBehavC # PerceivedBehavC: PBC1 shows very low loading in PBC and highein Risk
+  c("Sn1", "Sn2", "Sn3"),       # SubjectiveNorms
+  c("DecIntention", "Offset")    # Behaviour: PastRedAction presents a very low load so is deleted
+)
+
+#3rd stage
+blocks <- list(
+  c( "Rsk2", "Rsk3", "Rsk4"), # Risk
+  c("Att1",  "Att2", "Att4"),   # Attitudes
+  c( "Pbc3", "Pbc4"),    # PerceivedBehavC
+  c("Sn1", "Sn2", "Sn3"),       # SubjectiveNorms
+  c("DecIntention", "Offset")   # Behaviour
+)
+
+# Define all variables as reflexive
+modes <- c("A", "A", "A", "A", "A")
+
+#PLS-PM
+pls_model <- plspm(RHC, path_matrix, blocks, modes)
+summary(pls_model)
+
+crossloadings <- pls_model$crossloadings  %>% dplyr::select( -block)
+
+# Crear tabla LaTeX con xtable
+xtable(crossloadings, caption = "Cross loadings PLS", label = "tab:loadings")
+
+
+
+
+crossloadings_named <- crossloadings
+rownames(crossloadings) <- crossloadings$name
+crossloadings$name <- NULL
+crossloadings$block <- NULL  # eliminar si no quieres mostrar 'block'
+
+print(xtable(crossloadings,
+             caption = "Cross loadings Stage 1",
+             label = "tab:loadings",
+             digits = 2),
+      type = "latex",
+      include.rownames = TRUE)
+
+
+
+```
+
+### AVE and composite reliability
+
+```{r}
+# Measurement-model reliability and convergent validity criteria:
+# composite reliability and AVE follow Fornell & Larcker (1981),
+# Bagozzi & Yi (1988), and Hair et al. (2017). Full references: REFERENCES.md.
+# AVE
+ave_values <- pls_model$outer_model %>%
+  group_by(block) %>%
+  summarize(AVE = sum((loading^2)) / (sum((loading^2)) + sum((1 - loading^2))))
+# Composite Reliability
+composite_reliability <- pls_model$outer_model %>%
+  group_by(block) %>%
+  summarize(CR = sum((loading)^2) / (sum((loading)^2) + sum((1 - loading)^2)))
+print(ave_values)
+print(composite_reliability)
+```
+
+### Fornell - Larcker criterion
+
+```{r}
+# Discriminant validity is assessed with the Fornell-Larcker criterion
+# (Fornell & Larcker, 1981). Full reference: REFERENCES.md.
+#AVE
+ave_values <- pls_model$outer_model %>%
+  group_by(block) %>%
+  summarize(AVE = sum(loading^2) / length(loading))
+
+#Fornell-Larcker Matrix
+fornell_larcker <- matrix(NA, ncol=length(blocks), nrow=length(blocks))
+rownames(fornell_larcker) <- colnames(fornell_larcker) <- c("Risk", "Attitudes", "PerceivedBehavC", "SubjectiveNorms", "Behaviour")
+
+#Fill the diagonal with AVE values
+diag(fornell_larcker) <- sqrt(ave_values$AVE)
+latent_correlations <- cor(pls_model$scores)
+# Latent correlations
+for (i in 1:length(blocks)) {
+  for (j in 1:length(blocks)) {
+    if (i != j) {
+      fornell_larcker[i, j] <- latent_correlations[i, j]
+    }
+  }
+}
+print(fornell_larcker)
+
+fornell_larcker_df <- as.data.frame(fornell_larcker)
+library(xtable)
+# Creamos la tabla LaTeX
+latex_table <- xtable(fornell_larcker,
+                      caption = "Fornell-Larcker Matrix",
+                      label = "tab:fornell_larcker",
+                      digits = 2) 
+
+xtable(fornell_larcker, caption = "Fornell-Larcker Criterion", label = "tab:FLMatrix")
+```
+
+### Heterotrait - monotrait Matrix
+
+```{r}
+# HTMT is used as an additional discriminant-validity criterion
+# (Henseler, Ringle & Sarstedt, 2015). Full reference: REFERENCES.md.
+library(semTools)
+calculate_htmt <- function(pls_model, RHC, blocks) {
+  # latent constructs
+  scores <- pls_model$scores
+  # HTMT matrix
+  n_blocks <- length(blocks)
+  htmt_matrix <- matrix(NA, nrow = n_blocks, ncol = n_blocks)
+  
+  
+rownames(htmt_matrix) <- colnames(htmt_matrix) <- c("Risk", "Attitudes", "PerceivedBehavC", "SubjectiveNorms", "Behaviour")
+  for (i in 1:(n_blocks - 1)) {
+    for (j in (i + 1):n_blocks) {
+      indicators_i <- blocks[[i]]
+      indicators_j <- blocks[[j]]
+      # HTMT correlations
+      heterotrait_cor <- cor(RHC[, indicators_i], RHC[, indicators_j])
+      monotrait_cor_i <- cor(RHC[, indicators_i])
+      monotrait_cor_j <- cor(RHC[, indicators_j])
+      # Calcular HTMT
+      htmt_value <- mean(abs(heterotrait_cor)) / (sqrt(mean(abs(monotrait_cor_i[lower.tri(monotrait_cor_i)]))) * sqrt(mean(abs(monotrait_cor_j[lower.tri(monotrait_cor_j)]))))
+            htmt_matrix[i, j] <- htmt_value
+      htmt_matrix[j, i] <- htmt_value
+    }
+  }
+  return(htmt_matrix)
+}
+htmt_matrix <- calculate_htmt(pls_model, RHC, blocks)
+print(htmt_matrix)
+
+xtable(htmt_matrix, caption = "Heterotrait-Monotrait Criterion", label = "tab:HTMTMatrix")
+```
+
+## Spanish firms sample
+
+
+### Internal consistency
+```{r}
+psych::alpha(Spain[9:27])
+```
+
+### Confirmatory Factor Analysis
+
+#### KMO and Fligner-Killeen test
+```{r}
+KMO((Spain[9:27]))
+fligner.test((Spain[9:27]))
+```
+
+#### Factor loadings
+```{r}
+scree((Spain[9:27]), main="Sediment graph")
+#Factor loadings
+Behaviour <- psych::fa(Spain[9:27], nfactor = 3,rotate = "varimax", fm="pa") %>%
+model_parameters(sort = TRUE, threshold = "max")
+
+#Adter running the CFA, we select the cross loadings higher than .70
+fac.SEM <- psych::fa(Spain[9:27], nfactor = 1,rotate = "none", fm="pa") %>% model_parameters(sort = TRUE, threshold = "max")
+fac.SEM
+```
+
+### Measurement model
+```{r}
+path_matrix <- rbind(
+  c(0, 0, 0, 0, 0), # Risk
+  c(1, 0, 0, 0, 0), # Attitudes
+  c(0, 1, 0, 0, 0), # PerceivedBehavC
+  c(0, 0, 0, 0, 0), # SubjectiveNorms
+  c(1, 1, 1, 1, 0)  # Behaviour
+)
+#first stage
+colnames(path_matrix) <- rownames(path_matrix) <- c("Risk", "Attitudes", "PerceivedBehavC",   "SubjectiveNorms", "Behaviour")
+# Measure model
+
+
+#Stage1
+blocks1 <- list(
+  c("Rsk1","Rsk2", "Rsk3", "Rsk4"),       # Risk: Rsk1 presents a low load and a high cross loading with PBC, deletion.
+  c("Att1", "Att2","Att3" , "Att4"),      # Attitudes:
+  c("Pbc1", "Pbc2", "Pbc3", "Pbc4"),      # PerceivedBehavC: PBC2 has a higher load in Risk than in PBC, we delete it
+  c("Sn1", "Sn2", "Sn3"),                 # SubjectiveNorms
+  c("PastActionRed", "DecIntention", "PastOffset")          # Behaviour
+)
+#Stage2
+blocks2 <- list(
+  c("Rsk2","Rsk3","Rsk4"),          # Risk
+  c("Att1", "Att2","Att3" ,"Att4"), # Attitudes: Att3 has a high cross loading in subjective norms 
+  c( "Pbc2", "Pbc3", "Pbc4"),        # PerceivedBehavC: PBC1 presents low loading and  has a higher cross-load with subjective norms, we delete it
+  c("Sn1", "Sn2", "Sn3"),           # SubjectiveNorms
+  c("PastActionRed", "DecIntention")  # Behaviour: the construct presents an AVE under .50, so the lowest load is deleted to adjust composite reliability. 
+)
+#Stage3
+blocks <- list(
+  c("Rsk2", "Rsk3", "Rsk4"),
+  c("Att1", "Att2", "Att4"),
+  c( "Pbc3", "Pbc4"),
+  c("Sn1", "Sn2", "Sn3"),
+  c("PastActionRed", "DecIntention")
+)
+
+# Define all variables as reflexive
+modes <- c("A", "A", "A", "A", "A")
+#PLS-PM
+pls_model <- plspm(Spain, path_matrix, blocks, modes)
+summary(pls_model)
+
+
+
+crossloadings <- pls_model$crossloadings  %>% dplyr::select( -block)
+
+# Crear tabla LaTeX con xtable
+xtable(crossloadings, caption = "Cross loadings PLS", label = "tab:loadings")
+
+
+
+
+crossloadings_named <- crossloadings
+rownames(crossloadings) <- crossloadings$name
+crossloadings$name <- NULL
+crossloadings$block <- NULL  # eliminar si no quieres mostrar 'block'
+
+print(xtable(crossloadings,
+             caption = "Cross loadings Stage 1",
+             label = "tab:loadings",
+             digits = 2),
+      type = "latex",
+      include.rownames = TRUE)
+
+```
+
+
+
+### AVE and composite reliability
+```{r}
+# Measurement-model reliability and convergent validity criteria:
+# composite reliability and AVE follow Fornell & Larcker (1981),
+# Bagozzi & Yi (1988), and Hair et al. (2017). Full references: REFERENCES.md.
+# AVE
+ave_values <- pls_model$outer_model %>%
+  group_by(block) %>%
+  summarize(AVE = sum((loading^2)) / (sum((loading^2)) + sum((1 - loading^2))))
+# Composite Reliability
+composite_reliability <- pls_model$outer_model %>%
+  group_by(block) %>%
+  summarize(CR = (sum(loading)^2) / ((sum(loading)^2) + sum(1 - loading^2)))
+print(ave_values)
+print(composite_reliability)
+```
+
+### Fornell - Larcker criterion
+```{r}
+# Discriminant validity is assessed with the Fornell-Larcker criterion
+# (Fornell & Larcker, 1981). Full reference: REFERENCES.md.
+library(dplyr)
+#AVE
+ave_values <- pls_model$outer_model %>%
+  group_by(block) %>%
+  summarize(AVE = sum(loading^2) / length(loading))
+
+#Fornell-Larcker Matrix
+fornell_larcker <- matrix(NA, ncol=length(blocks), nrow=length(blocks))
+rownames(fornell_larcker) <- colnames(fornell_larcker) <- c("Risk", "Attitudes", "PerceivedBehavC",   "SubjectiveNorms", "Behaviour")
+
+#Fill the diagonal with AVE values
+diag(fornell_larcker) <- sqrt(ave_values$AVE)
+latent_correlations <- cor(pls_model$scores)
+# Latent correlations
+for (i in 1:length(blocks)) {
+  for (j in 1:length(blocks)) {
+    if (i != j) {
+      fornell_larcker[i, j] <- latent_correlations[i, j]
+    }
+  }
+}
+print(fornell_larcker)
+
+fornell_larcker_df <- as.data.frame(fornell_larcker)
+library(xtable)
+# Creamos la tabla LaTeX
+latex_table <- xtable(fornell_larcker,
+                      caption = "Matriz de Fornell-Larcker",
+                      label = "tab:fornell_larcker",
+                      digits = 2)  # Ajusta la cantidad de decimales
+
+xtable(fornell_larcker, caption = "Fornell-Larcker Criterion", label = "tab:FLMatrix")
+```
+
+### Heterotrait - monotrait Matrix
+```{r}
+
+# HTMT is used as an additional discriminant-validity criterion
+# (Henseler, Ringle & Sarstedt, 2015). Full reference: REFERENCES.md.
+library(semTools)
+calculate_htmt <- function(pls_model, Spain, blocks) {
+  # latent constructs
+  scores <- pls_model$scores
+  # HTMT matrix
+  n_blocks <- length(blocks)
+  htmt_matrix <- matrix(NA, nrow = n_blocks, ncol = n_blocks)
+  rownames(htmt_matrix) <- colnames(htmt_matrix) <- c("Risk", "Attitudes", "PerceivedBehavC",   "SubjectiveNorms", "Behaviour")
+  for (i in 1:(n_blocks - 1)) {
+    for (j in (i + 1):n_blocks) {
+      indicators_i <- blocks[[i]]
+      indicators_j <- blocks[[j]]
+      # HTMT correlations
+      heterotrait_cor <- cor(Spain[, indicators_i], Spain[, indicators_j])
+      monotrait_cor_i <- cor(Spain[, indicators_i])
+      monotrait_cor_j <- cor(Spain[, indicators_j])
+      # Calcular HTMT
+      htmt_value <- mean(abs(heterotrait_cor)) / (sqrt(mean(abs(monotrait_cor_i[lower.tri(monotrait_cor_i)]))) * sqrt(mean(abs(monotrait_cor_j[lower.tri(monotrait_cor_j)]))))
+            htmt_matrix[i, j] <- htmt_value
+      htmt_matrix[j, i] <- htmt_value
+    }
+  }
+  return(htmt_matrix)
+}
+htmt_matrix <- calculate_htmt(pls_model,Spain , blocks)
+print(htmt_matrix)
+
+xtable(htmt_matrix, caption = "Heterotrait-Monotrait Criterion", label = "tab:HTMTMatrix")
+```
+
+
+
+
+
+
+# Partial Least Squares - Structural Equation models
+## Registry sample: Boot-strapping
+
+```{r}
+set.seed(123)
+pls_model_boot <- plspm(RHC, path_matrix, blocks, modes, boot.val = TRUE, br = 10000
+                        )
+summary(pls_model_boot)
+boot_results <- pls_model_boot$boot
+print(boot_results)
+```
+
+### Latent scores' extraction for the logistic model
+
+```{r}
+library(writexl)
+latent_scores <- pls_model_boot$scores
+latent_scores_df <- as.data.frame(latent_scores)
+SemConstructsE1 <- cbind(RHC, latent_scores_df)
+file_path <- "SemConstructsE1.xlsx"
+write_xlsx(SemConstructsE1, path = file_path)
+```
+
+## Spanish firms sample: Boot-strapping
+```{r}
+set.seed(0611)
+library(plspm)
+pls_model_boot_Spain <- plspm(Spain, path_matrix, blocks, modes, boot.val = TRUE, br = 10000)
+summary(pls_model_boot_Spain)
+```
+
+### Latent scores' extraction for the logistic model
+
+```{r}
+library(writexl)
+latent_scores <- pls_model_boot_Spain$scores
+latent_scores_df <- as.data.frame(latent_scores)
+SemConstructs <- cbind(Spain, latent_scores_df)
+file_path <- "SemConstructsE2.xlsx"
+write_xlsx(SemConstructs, path = file_path)
+```
+
+
+## Sensibility analysis for non-registered firms
+
+```{r}
+set.seed(0611)
+
+# --- ORIGINAL MODEL (With Awareness in BEH) ---
+
+
+
+path_matrix <- rbind(
+  c(0, 0, 0, 0, 0), # Risk
+  c(1, 0, 0, 0, 0), # Attitudes
+  c(0, 1, 0, 0, 0), # PerceivedBehavC
+  c(0, 0, 0, 0, 0), # SubjectiveNorms
+  c(1, 1, 1, 1, 0)  # Behaviour
+)
+#first stage
+colnames(path_matrix) <- rownames(path_matrix) <- c("Risk", "Attitudes", "PerceivedBehavC",   "SubjectiveNorms", "Behaviour")
+# Measure model
+
+
+#Stage3 straight
+ blocks_original <- list(
+  RSK = c("Rsk2", "Rsk3", "Rsk4"),     # Risk:
+  ATT = c("Att1", "Att2", "Att4"),     # Attitudes:
+  PBC = c("Pbc3", "Pbc4"),             # PerceivedBehavC:
+  SN  = c("Sn1", "Sn2", "Sn3"),        # SubjectiveNorms
+  BEH = c("PastActionRed", "DecIntention") # Behaviour
+)
+
+# Structural relation matrix (inner model)
+
+modes <- rep("A", 5)  # reflective variables
+
+model_original <- plspm(
+  Spain,
+  path_matrix = path_matrix,
+  blocks = blocks_original,
+  modes = modes,
+  boot.val = TRUE,
+  br = 10000
+)
+
+path_matrixsen <- rbind(
+  c(0, 0, 0, 0, 0), # Risk
+  c(1, 0, 0, 0, 0), # Attitudes
+  c(0, 1, 0, 0, 0), # PerceivedBehavC
+  c(0, 0, 0, 0, 0), # SubjectiveNorms
+  c(1, 1, 1, 1, 0)  # Behaviour
+)
+
+
+colnames(path_matrixsen) <- rownames(path_matrixsen) <- c("Risk", "Attitudes", "PerceivedBehavC",   "SubjectiveNorms", "Behaviour")
+# Measure model
+# --- Sensibility model (without Awareness) ---
+blocks_sensitivity <- list(
+  RSK = c("Rsk2", "Rsk3", "Rsk4"),     # Risk:
+  ATT = c("Att1", "Att2", "Att4"),     # Attitudes:
+  PBC = c("Pbc3", "Pbc4"),             # PerceivedBehavC:
+  SN  = c("Sn1", "Sn2", "Sn3"),        # SubjectiveNorms
+  BEH = c("DecIntention") # Behaviour
+)
+modessen <- rep("A", 5)
+
+model_sensitivity <- plspm(
+  Spain,
+  path_matrix = path_matrixsen,
+  blocks = blocks_sensitivity,
+  modes = modessen,
+  boot.val = TRUE,
+  br = 10000
+)
+
+summary(pls_model_boot_Spain)
+summary(model_sensitivity)
+
+```
+
+
+# Random utility Framework
+
+## Data
+```{r}
+RHC <- read_excel(data_path, sheet = "DCE_RHC_II")
+ESP <- read_excel(data_path, sheet = "DCE_Spain_II")
+
+# --- 1)Atributes
+attr_Project  <- intersect(c("Project", "project"), names(RHC))[1]
+attr_Location <- intersect(c("Location", "location"), names(RHC))[1]
+attr_Species  <- intersect(c("Species", "Specie", "species", "specie"), names(RHC))[1]
+attr_Price    <- intersect(c("Price", "price"), names(RHC))[1]
+
+stopifnot(!is.na(attr_Project), !is.na(attr_Location),
+          !is.na(attr_Species), !is.na(attr_Price))
+
+attrs <- c(attr_Project, attr_Location, attr_Species, attr_Price)
+
+# --- 2) Create Alt (optout/project) and ASC_accept from ASC_optout
+RHC <- RHC %>%
+  mutate(
+    Alt = ifelse(Optout == 1, "optout", "project"),
+    ASC_accept = ifelse(Optout == 1, 0, 1)
+  )
+
+# --- 3) Replace -4 by 0 only in opt-out rows
+RHC <- RHC %>%
+  mutate(across(all_of(attrs), ~ ifelse(Alt == "optout" & .x == -4, 0, .x)))
+
+# --- 4) Create chid (ID by choice card)
+has_qid  <- "QuestionId" %in% names(RHC) || "Question_Id" %in% names(RHC)
+qid_name <- if ("QuestionId" %in% names(RHC)) "QuestionId" else "Question_Id"
+id_name  <- if ("Id" %in% names(RHC)) "Id" else "id"
+pqi_name <- if ("ParentQuestionId" %in% names(RHC)) "ParentQuestionId" else "Parent_Question_Id"
+
+if (has_qid) {
+  RHC <- RHC %>%
+    mutate(chid = paste(.data[[id_name]], .data[[pqi_name]], .data[[qid_name]], sep = "_"))
+} else {
+  ord_name <- if ("Ordering" %in% names(RHC)) "Ordering" else stop("Falta QuestionId y Ordering")
+  RHC <- RHC %>%
+    mutate(chid = paste(.data[[id_name]], .data[[pqi_name]], .data[[ord_name]], sep = "_"))
+}
+
+# --- 5) Verification (Each card must have only one choice)
+RHC %>%
+  group_by(chid) %>%
+  summarise(chosen_sum = sum(Choice), .groups = "drop") %>%
+  filter(chosen_sum != 1)
+
+# --- 6) mlogit definition
+library(mlogit)
+df_mld_RHC <- mlogit.data(RHC,
+                           choice   = "Choice",
+                           shape    = "long",
+                           alt.var  = "Alt",
+                           chid.var = "chid",
+                           id.var   = "Id")
+
+
+# --- 1)Atributes
+attr_Location <- intersect(c("Location", "location"), names(ESP))[1]
+attr_Species  <- intersect(c("Species", "Specie", "species", "specie"), names(ESP))[1]
+attr_Price    <- intersect(c("Price", "price"), names(ESP))[1]
+
+stopifnot(!is.na(attr_Project), !is.na(attr_Location),
+          !is.na(attr_Species), !is.na(attr_Price))
+
+attrs <- c(attr_Project, attr_Location, attr_Species, attr_Price)
+
+# --- 2) Create Alt (optout/project) and ASC_accept from ASC_optout
+ESP <- ESP %>%
+  mutate(
+    Alt = ifelse(Optout == 1, "optout", "project"),
+    ASC_accept = ifelse(Optout == 1, 0, 1)
+  )
+
+# --- 3) Replace -4 by 0 only in opt-out rows
+ESP <- ESP %>%
+  mutate(across(all_of(attrs), ~ ifelse(Alt == "optout" & .x == -4, 0, .x)))
+
+# --- 4) Create chid (ID by choice card)
+has_qid  <- "QuestionId" %in% names(ESP) || "Question_Id" %in% names(ESP)
+qid_name <- if ("QuestionId" %in% names(ESP)) "QuestionId" else "Question_Id"
+id_name  <- if ("Id" %in% names(ESP)) "Id" else "id"
+pqi_name <- if ("ParentQuestionId" %in% names(ESP)) "ParentQuestionId" else "Parent_Question_Id"
+
+if (has_qid) {
+  ESP <- ESP %>%
+    mutate(chid = paste(.data[[id_name]], .data[[pqi_name]], .data[[qid_name]], sep = "_"))
+} else {
+  ord_name <- if ("Ordering" %in% names(ESP)) "Ordering" else stop("There are no variables named QuestionId and/or Ordering")
+  ESP <- ESP %>%
+    mutate(chid = paste(.data[[id_name]], .data[[pqi_name]], .data[[ord_name]], sep = "_"))
+}
+
+# --- 5) Verification (Each card must have only one choice)
+ESP %>%
+  group_by(chid) %>%
+  summarise(chosen_sum = sum(Choice), .groups = "drop") %>%
+  filter(chosen_sum != 1)
+
+# --- 6) mlogit definition
+library(mlogit)
+df_mld_ESP <- mlogit.data(ESP,
+                           choice   = "Choice",
+                           shape    = "long",
+                           alt.var  = "Alt",
+                           chid.var = "chid",
+                           id.var   = "Id")
+```
+
+
+## Conditional variables interaction with ASC
+```{r}
+df_mld_RHC$cRisk  <- scale(df_mld_RHC$Risk, center=TRUE, scale=FALSE)
+df_mld_RHC$cAtt <- scale(df_mld_RHC$Attitudes, center=TRUE, scale=FALSE)
+df_mld_RHC$cSN  <- scale(df_mld_RHC$SubjectiveNorms, center=TRUE, scale=FALSE)
+df_mld_RHC$cPBC  <- scale(df_mld_RHC$PerceivedBehavC, center=TRUE, scale=FALSE)
+
+df_mld_RHC$ASC_Att <- df_mld_RHC$ASC_accept * df_mld_RHC$cAtt
+df_mld_RHC$ASC_SN  <- df_mld_RHC$ASC_accept * df_mld_RHC$cSN
+df_mld_RHC$ASC_PBC <- df_mld_RHC$ASC_accept * df_mld_RHC$cPBC 
+df_mld_RHC$ASC_Risk <- df_mld_RHC$ASC_accept * df_mld_RHC$cRisk
+df_mld_RHC$ASC_Service <- df_mld_RHC$ASC_accept * df_mld_RHC$Service
+df_mld_RHC$ASC_PYME <- df_mld_RHC$ASC_accept * df_mld_RHC$PYME
+df_mld_RHC$ASC_SustDepart <- df_mld_RHC$ASC_accept * df_mld_RHC$SustDepart
+
+df_mld_ESP$cRisk  <- scale(df_mld_ESP$Risk, center=TRUE, scale=FALSE)
+df_mld_ESP$cAtt <- scale(df_mld_ESP$Attitudes, center=TRUE, scale=FALSE)
+df_mld_ESP$cSN  <- scale(df_mld_ESP$SubjectiveNorms, center=TRUE, scale=FALSE)
+df_mld_ESP$cPBC  <- scale(df_mld_ESP$PerceivedBehavC, center=TRUE, scale=FALSE)
+
+df_mld_ESP$ASC_Att <- df_mld_ESP$ASC_accept * df_mld_ESP$cAtt
+df_mld_ESP$ASC_SN  <- df_mld_ESP$ASC_accept * df_mld_ESP$cSN
+df_mld_ESP$ASC_PBC <- df_mld_ESP$ASC_accept * df_mld_ESP$cPBC
+df_mld_ESP$ASC_Risk <- df_mld_ESP$ASC_accept * df_mld_ESP$cRisk
+df_mld_ESP$ASC_Service <- df_mld_ESP$ASC_accept * df_mld_ESP$Service
+df_mld_ESP$ASC_PYME <- df_mld_ESP$ASC_accept * df_mld_ESP$PYME
+df_mld_ESP$ASC_SustDepart <- df_mld_ESP$ASC_accept * df_mld_ESP$SustDepart
+```
+## Conditional models
+
+### Base multinomial logit
+```{r}
+
+
+# MNL baseline (atributes + ASC) ---
+mnlR0 <- mlogit(Choice ~ 0 + Project + Specie + Location + Price  + ASC_accept,
+               data = df_mld_RHC)
+summary(mnlR0)
+
+# MNL baseline (atributes + ASC) ---
+mnlE0 <- mlogit(Choice ~ 0 + Project + Specie + Location + Price + ASC_accept,
+               data = df_mld_ESP)
+summary(mnlE0)
+```
+
+### Conditional logit: Registry
+```{r}
+clRec <- gmnl(
+  Choice ~ 0 + Project + Specie + Location + Price + ASC_accept + ASC_Att + ASC_SN + ASC_PBC+ ASC_Risk + ASC_Service + ASC_PYME,
+  data = df_mld_RHC,
+  model = "mnl"
+)
+summary(clRec)
+
+```
+### Conditional logit: Spain
+```{r}
+clEec <- gmnl(
+  Choice ~ 0 + Project + Specie + Location + Price + ASC_accept + ASC_Att + ASC_SN + ASC_PBC+ ASC_Risk + ASC_Service + ASC_PYME,
+  data = df_mld_ESP,
+  model = "mnl"
+)
+summary(clEec)
+
+```
+
+### Mixed logit: Halton draws
+
+#### Functions' definition 
+```{r}
+set.seed(45855)
+
+# ===============================
+# ROBUST AUXILIAR FUNCTIONS
+# ===============================
+len1 <- function(x){
+  if (is.null(x) || length(x) == 0) return(NA_real_)
+  y <- suppressWarnings(as.numeric(x))
+  if (length(y) == 0) return(NA_real_)
+  if (!is.finite(y[1])) return(NA_real_) else return(y[1])
+}
+
+extract_se <- function(m){
+  cf <- coef(m)
+  out <- tryCatch({
+    V  <- vcov(m)
+    se <- sqrt(diag(V))
+    if(is.null(names(se)) && !is.null(rownames(V))) names(se) <- rownames(V)
+    if(is.null(names(se))) names(se) <- names(cf)
+    se
+  }, error = function(e) {
+    se <- rep(NA_real_, length(cf))
+    names(se) <- names(cf)
+    se
+  })
+  out
+}
+
+compare_models_hybrid <- function(m_new, m_old, beta_switch, se_switch){
+  b_new <- coef(m_new); b_old <- coef(m_old)
+  alln  <- union(names(b_new), names(b_old))
+  b_new <- b_new[alln]; b_old <- b_old[alln]
+
+  se_new <- extract_se(m_new)[alln]
+  se_old <- extract_se(m_old)[alln]
+
+  db_abs  <- abs(b_new - b_old)
+  db_rel  <- abs(b_new - b_old) / (abs(b_old) + 1e-12)
+  dse_abs <- abs(se_new - se_old)
+  dse_rel <- abs(se_new - se_old) / (abs(se_old) + 1e-12)
+
+  beta_metric <- ifelse(abs(b_old) < beta_switch, db_abs, db_rel)
+  se_metric   <- ifelse(abs(se_old) < se_switch, dse_abs, dse_rel)
+
+  i_beta <- which.max(ifelse(is.finite(beta_metric), beta_metric, -Inf))
+  i_se   <- which.max(ifelse(is.finite(se_metric),   se_metric,   -Inf))
+
+  top_beta_name <- if(length(i_beta)) names(beta_metric)[i_beta] else NA_character_
+  top_se_name   <- if(length(i_se))   names(se_metric)[i_se]      else NA_character_
+
+  list(
+    beta_metric = beta_metric,
+    se_metric   = se_metric,
+    top_beta    = list(name = top_beta_name,
+                       old  = len1(b_old[top_beta_name]),
+                       new  = len1(b_new[top_beta_name]),
+                       met  = len1(beta_metric[top_beta_name]),
+                       used = ifelse(abs(len1(b_old[top_beta_name])) < beta_switch, "abs", "rel")),
+    top_se      = list(name = top_se_name,
+                       old  = len1(se_old[top_se_name]),
+                       new  = len1(se_new[top_se_name]),
+                       met  = len1(se_metric[top_se_name]),
+                       used = ifelse(abs(len1(se_old[top_se_name])) < se_switch, "abs", "rel")),
+    max_beta = suppressWarnings(max(beta_metric[is.finite(beta_metric)], na.rm=TRUE)),
+    max_se   = suppressWarnings(max(se_metric[is.finite(se_metric)],     na.rm=TRUE)),
+    dll      = abs(len1(logLik(m_new)) - len1(logLik(m_old)))
+  )
+}
+```
+#### Registry Halton draws loop halton = list(c(2, 3, 5, 7)) BGFS method
+
+```{r}
+set.seed(1685)
+# ===============================
+# 1) SPECIFICATION
+# ===============================
+form_mixlR2 <- Choice ~ 0 + Project + Specie + Location + Price +
+  ASC_accept + ASC_Att + ASC_SN + ASC_PBC + ASC_PYME + ASC_Service
+
+ranp <- c(
+  Project    = "n",
+  Specie     = "n",
+  Location   = "n",
+  ASC_accept = "n"
+)
+
+data <- df_mld_RHC
+
+# ===============================
+# 2) LOOP PARAMETERS
+# ===============================
+R_start <- 2000
+step_R  <- 200
+max_R   <- 3000
+
+# ---------------------------------------------------------------------------
+# Tolerance thresholds — grounded in discrete choice literature.
+# Full APA 6th references are listed separately in REFERENCES.md.
+#
+# beta_switch / se_switch:
+#   Below this |value|, use ABSOLUTE metric; above it, use RELATIVE metric.
+#   Set to 0.05: parameters near zero are essentially null and a relative
+#   criterion would be artificially loose (Train, 2009).
+#
+# Mean parameters (beta_abs/rel_tol_mean):
+#   0.001 (0.1% relative, or 0.001 absolute).
+#   Hensher & Greene (2003) "State of Practice": stability declared when
+#   parameters do not change in the third significant digit across draw counts.
+#   Train (2009): simulation error should be negligible relative to the
+#   sampling variance of the estimator.
+#
+# SD parameters (beta_abs/rel_tol_sd):
+#   Loosened to 0.005 (0.5%). Standard deviations of mixing distributions
+#   carry inherently higher simulation noise than means; Czajkowski &
+#   Budzinski (2019) set their Minimum Tolerance
+#   criterion at this order of magnitude for SDs estimated with Halton draws.
+#
+# SE tolerance (se_abs/rel_tol):
+#   Hess, Train & Polak (2006): simulation error in SEs
+#   should be evaluated relative to the SE magnitude itself.
+#   2% relative (0.02) is consistent with their Monte Carlo comparisons.
+#   Absolute fallback of 0.01 for near-zero SEs.
+#
+# Log-likelihood relative change (ll_rel_tol):
+#   1e-5. Train (2009): MSL is asymptotically equivalent to ML when R grows
+#   faster than sqrt(N); at that point ΔLL between consecutive R values
+#   should be negligible. 1e-5 is stricter than the typical optimizer
+#   convergence tolerance (1e-4) and consistent with Czajkowski & Budzinski
+#   (2019) simulation error benchmarks.
+# ---------------------------------------------------------------------------
+beta_switch        <- 0.05   # |b_old| threshold: abs vs. rel metric
+
+beta_abs_tol_mean  <- 0.001  # abs Δ tolerance for mean parameters
+beta_rel_tol_mean  <- 0.001  # rel Δ tolerance for mean parameters
+
+beta_abs_tol_sd    <- 0.005  # abs Δ tolerance for sd. parameters
+beta_rel_tol_sd    <- 0.005  # rel Δ tolerance for sd. parameters
+
+se_switch          <- 0.05   # SE threshold: abs vs. rel metric
+se_abs_tol         <- 0.010  # abs Δ tolerance for standard errors
+se_rel_tol         <- 0.020  # rel Δ tolerance for standard errors (2%)
+
+ll_rel_tol         <- 1e-5   # rel ΔLL tolerance across consecutive R values
+
+# ===============================
+# 3) SAFE WRAPPER CON BFGS
+# ===============================
+fit_gmnl_safe <- function(formula, data, ranp, R, corr = FALSE, start = NULL){
+  gmnl(formula, data=data, model="mixl", ranp=ranp, panel=TRUE,
+       R=R, halton=list(prime = c(11, 3, 5, 7)), correlation=corr,
+       method="bfgs", start=start)
+}
+
+# ===============================
+# 4) Stabilisation loop
+# ===============================
+fits_A <- list()
+diag_tbl_R <- data.frame(
+  R = integer(), logLik = numeric(),
+  max_beta_metric = numeric(), mover_beta = character(), metric_used_beta = character(),
+  max_se_metric   = numeric(), mover_se   = character(), metric_used_se   = character(),
+  dLL = numeric(), dLL_rel = numeric(),
+  stringsAsFactors = FALSE
+)
+
+prev_fit   <- NULL
+prev_coefs <- NULL
+Rcurr <- as.integer(R_start)
+
+repeat{
+  cat(sprintf("\n[gmnl] MIXL-R (corr=FALSE) con R = %d (Halton, BFGS) ...\n", Rcurr))
+  t0 <- Sys.time()
+  fitA <- fit_gmnl_safe(form_mixlR2, data = data, ranp = ranp,
+                        R = Rcurr, corr = FALSE, start = prev_coefs)
+  t1 <- Sys.time()
+  llA <- len1(logLik(fitA))
+  cat(sprintf("  Hecho en %.1f s | logLik = %.3f\n",
+              as.numeric(difftime(t1, t0, units="secs")), llA))
+
+  fits_A[[as.character(Rcurr)]] <- fitA
+  coefs_now <- tryCatch(coef(fitA), error=function(e) NULL)
+
+  if(is.null(prev_fit)){
+    diag_tbl_R <- rbind(diag_tbl_R, data.frame(
+      R = Rcurr, logLik = llA,
+      max_beta_metric = NA_real_, mover_beta = NA_character_, metric_used_beta = NA_character_,
+      max_se_metric   = NA_real_, mover_se   = NA_character_, metric_used_se   = NA_character_,
+      dLL = NA_real_, dLL_rel = NA_real_
+    ))
+  } else {
+    cmp <- compare_models_hybrid(fitA, prev_fit, beta_switch, se_switch)
+    dLL_abs <- len1(cmp$dll)
+    dLL_rel <- abs(dLL_abs) / (abs(len1(logLik(prev_fit))) + 1e-12)
+
+    cat(sprintf("  Summing up: max β-metric=%.6f | max SE-metric=%.6f | ΔLL_rel=%.6e\n",
+                len1(cmp$max_beta), len1(cmp$max_se), dLL_rel))
+
+    row <- data.frame(
+      R = Rcurr, logLik = llA,
+      max_beta_metric = len1(cmp$max_beta),
+      mover_beta      = cmp$top_beta$name,
+      metric_used_beta= cmp$top_beta$used,
+      max_se_metric   = len1(cmp$max_se),
+      mover_se        = cmp$top_se$name,
+      metric_used_se  = cmp$top_se$used,
+      dLL             = dLL_abs,
+      dLL_rel         = dLL_rel,
+      stringsAsFactors = FALSE
+    )
+
+    # ---- MEAN VS. SD separate criteria ----
+    b_new <- coef(fitA); b_old <- coef(prev_fit)
+    alln  <- union(names(b_new), names(b_old))
+    b_new <- b_new[alln]; b_old <- b_old[alln]
+    is_sd <- grepl("^sd\\.", alln)
+
+    db_abs <- abs(b_new - b_old)
+    db_rel <- abs(b_new - b_old) / (abs(b_old) + 1e-12)
+
+    # Mean
+    db_abs_mean <- db_abs[!is_sd]; db_rel_mean <- db_rel[!is_sd]; b_old_mean <- b_old[!is_sd]
+    beta_ok_mean <- all(ifelse(abs(b_old_mean) < beta_switch,
+                               db_abs_mean < beta_abs_tol_mean,
+                               db_rel_mean < beta_rel_tol_mean), na.rm = TRUE)
+
+    # Deviations
+    db_abs_sd <- db_abs[is_sd]; db_rel_sd <- db_rel[is_sd]; b_old_sd <- b_old[is_sd]
+    beta_ok_sd <- all(ifelse(abs(b_old_sd) < beta_switch,
+                             db_abs_sd < beta_abs_tol_sd,
+                             db_rel_sd < beta_rel_tol_sd), na.rm = TRUE)
+
+    beta_ok <- beta_ok_mean && beta_ok_sd
+    se_ok   <- ifelse(row$metric_used_se == "rel",
+                      row$max_se_metric < se_rel_tol,
+                      row$max_se_metric < se_abs_tol)
+    ll_ok   <- row$dLL_rel < ll_rel_tol
+
+    diag_tbl_R <- rbind(diag_tbl_R, row)
+
+    # ---- Stopping conditions ----
+    if (!is.na(beta_ok) && !is.na(se_ok) && !is.na(ll_ok) && beta_ok && se_ok && ll_ok) {
+      cat(">> The model reach stability (mean, sd, SE y ΔLL_rel). Stop.\n")
+      prev_fit   <- fitA
+      prev_coefs <- coefs_now
+      break
+    }
+  }
+
+  # ---- UPPER LIMIT CONTROL ----
+  if (Rcurr + step_R > max_R){
+    cat(sprintf(">> The model reach max_R=%d without reaching tolerance criteria. Stop.\n", max_R))
+    prev_fit   <- fitA
+    prev_coefs <- coefs_now
+    break
+  }
+
+  prev_fit   <- fitA
+  prev_coefs <- coefs_now
+  Rcurr      <- Rcurr + step_R
+}
+
+# ===============================
+# 5) Final model
+# ===============================
+R_final_A   <- diag_tbl_R$R[nrow(diag_tbl_R)]
+mixlRHC <- fits_A[[as.character(R_final_A)]]
+
+cat(sprintf("\n[MIXL-A final)] R = %s | logLik = %.3f\n",
+            R_final_A, len1(logLik(mixlRHC))))
+summary(mixlRHC)
+
+# Iteration's diagnose
+diag_tbl_R
+
+```
+
+
+#### Reduced Mixed logit 
+
+```{r}
+
+#set.seed(1685) semilla del modelo reportado en el manuscrito, no borrar
+set.seed(0611) #semilla para comprobar la estabilidad del modelo, misma significación, modelo y especificaicones correctas
+
+# ===============================
+# 1) SPECIFICATION: MIXL REDUCED RHC
+# Project and Specie remain in utility, but are treated as fixed parameters
+# Random parameters: Location and ASC_accept only
+# ===============================
+
+form_mixl_redRHC <- Choice ~ 0 + Project + Specie + Location + Price +
+  ASC_accept + ASC_Att + ASC_SN + ASC_PBC + ASC_PYME + ASC_Service
+
+ranp_redRHC <- c(
+  Location   = "n",
+  ASC_accept = "n"
+)
+
+data_redRHC <- df_mld_RHC
+
+# ===============================
+# 2) LOOP PARAMETERS
+# ===============================
+
+R_start_redRHC <- 3400
+step_R_redRHC  <- 200
+max_R_redRHC   <- 4000
+
+# ---------------------------------------------------------------------------
+# Tolerance thresholds — same criteria as the full RHC mixed logit loop.
+# Full APA 6th references are listed separately in REFERENCES.md.
+#
+# beta_switch / se_switch = 0.05: use absolute differences near zero and
+# relative differences otherwise (Train, 2009).
+# Mean parameters = 0.001: stability in approximately the third significant
+# digit across draw counts (Hensher & Greene, 2003; Train, 2009).
+# SD parameters = 0.005: looser criterion for mixing-distribution standard
+# deviations, which are more simulation-noisy (Czajkowski & Budzinski, 2019).
+# SE tolerance = 0.010 absolute / 0.020 relative: evaluate simulation error
+# relative to the SE magnitude itself (Hess, Train & Polak, 2006).
+# Log-likelihood tolerance = 1e-5: negligible relative change across
+# consecutive draw counts (Train, 2009; Czajkowski & Budzinski, 2019).
+# ---------------------------------------------------------------------------
+
+beta_switch_redRHC        <- 0.05
+
+beta_abs_tol_mean_redRHC  <- 0.001
+beta_rel_tol_mean_redRHC  <- 0.001
+
+beta_abs_tol_sd_redRHC    <- 0.005
+beta_rel_tol_sd_redRHC    <- 0.005
+
+se_switch_redRHC          <- 0.05
+se_abs_tol_redRHC         <- 0.010
+se_rel_tol_redRHC         <- 0.020
+
+ll_rel_tol_redRHC         <- 1e-5
+
+# ===============================
+# 3) SAFE WRAPPER WITH BFGS
+# ===============================
+
+fit_gmnl_safe_redRHC <- function(formula, data, ranp, R, corr = FALSE, start = NULL){
+  gmnl(
+    formula,
+    data = data,
+    model = "mixl",
+    ranp = ranp,
+    panel = TRUE,
+    R = R,
+    halton = list(prime = c(2, 3)),
+    correlation = corr,
+    method = "bfgs",
+    start = start
+  )
+}
+
+# ===============================
+# 4) STABILISATION LOOP
+# ===============================
+
+fits_redRHC <- list()
+
+diag_tbl_R_redRHC <- data.frame(
+  R = integer(),
+  logLik = numeric(),
+  max_beta_metric = numeric(),
+  mover_beta = character(),
+  metric_used_beta = character(),
+  max_se_metric = numeric(),
+  mover_se = character(),
+  metric_used_se = character(),
+  dLL = numeric(),
+  dLL_rel = numeric(),
+  stringsAsFactors = FALSE
+)
+
+prev_fit_redRHC   <- NULL
+prev_coefs_redRHC <- NULL
+Rcurr_redRHC      <- as.integer(R_start_redRHC)
+
+repeat{
+
+  cat(sprintf(
+    "\n[gmnl] MIXL-RHC reduced (corr=FALSE) con R = %d (Halton, BFGS) ...\n",
+    Rcurr_redRHC
+  ))
+
+  t0_redRHC <- Sys.time()
+
+  fit_redRHC_iter <- fit_gmnl_safe_redRHC(
+    formula = form_mixl_redRHC,
+    data    = data_redRHC,
+    ranp    = ranp_redRHC,
+    R       = Rcurr_redRHC,
+    corr    = FALSE,
+    start   = prev_coefs_redRHC
+  )
+
+  t1_redRHC <- Sys.time()
+
+  ll_redRHC_iter <- len1(logLik(fit_redRHC_iter))
+
+  cat(sprintf(
+    "  Hecho en %.1f s | logLik = %.3f\n",
+    as.numeric(difftime(t1_redRHC, t0_redRHC, units = "secs")),
+    ll_redRHC_iter
+  ))
+
+  fits_redRHC[[as.character(Rcurr_redRHC)]] <- fit_redRHC_iter
+
+  coefs_now_redRHC <- tryCatch(
+    coef(fit_redRHC_iter),
+    error = function(e) NULL
+  )
+
+  if(is.null(prev_fit_redRHC)){
+
+    diag_tbl_R_redRHC <- rbind(
+      diag_tbl_R_redRHC,
+      data.frame(
+        R = Rcurr_redRHC,
+        logLik = ll_redRHC_iter,
+        max_beta_metric = NA_real_,
+        mover_beta = NA_character_,
+        metric_used_beta = NA_character_,
+        max_se_metric = NA_real_,
+        mover_se = NA_character_,
+        metric_used_se = NA_character_,
+        dLL = NA_real_,
+        dLL_rel = NA_real_,
+        stringsAsFactors = FALSE
+      )
+    )
+
+  } else {
+
+    cmp_redRHC <- compare_models_hybrid(
+      fit_redRHC_iter,
+      prev_fit_redRHC,
+      beta_switch_redRHC,
+      se_switch_redRHC
+    )
+
+    dLL_abs_redRHC <- len1(cmp_redRHC$dll)
+
+    dLL_rel_redRHC <- abs(dLL_abs_redRHC) /
+      (abs(len1(logLik(prev_fit_redRHC))) + 1e-12)
+
+    cat(sprintf(
+      "  Summing up: max β-metric=%.6f | max SE-metric=%.6f | ΔLL_rel=%.6e\n",
+      len1(cmp_redRHC$max_beta),
+      len1(cmp_redRHC$max_se),
+      dLL_rel_redRHC
+    ))
+
+    row_redRHC <- data.frame(
+      R = Rcurr_redRHC,
+      logLik = ll_redRHC_iter,
+      max_beta_metric = len1(cmp_redRHC$max_beta),
+      mover_beta = cmp_redRHC$top_beta$name,
+      metric_used_beta = cmp_redRHC$top_beta$used,
+      max_se_metric = len1(cmp_redRHC$max_se),
+      mover_se = cmp_redRHC$top_se$name,
+      metric_used_se = cmp_redRHC$top_se$used,
+      dLL = dLL_abs_redRHC,
+      dLL_rel = dLL_rel_redRHC,
+      stringsAsFactors = FALSE
+    )
+
+    # ---- MEAN VS. SD separate criteria ----
+
+    b_new_redRHC <- coef(fit_redRHC_iter)
+    b_old_redRHC <- coef(prev_fit_redRHC)
+
+    alln_redRHC <- union(names(b_new_redRHC), names(b_old_redRHC))
+
+    b_new_redRHC <- b_new_redRHC[alln_redRHC]
+    b_old_redRHC <- b_old_redRHC[alln_redRHC]
+
+    is_sd_redRHC <- grepl("^sd\\.", alln_redRHC)
+
+    db_abs_redRHC <- abs(b_new_redRHC - b_old_redRHC)
+
+    db_rel_redRHC <- abs(b_new_redRHC - b_old_redRHC) /
+      (abs(b_old_redRHC) + 1e-12)
+
+    # Mean parameters
+
+    db_abs_mean_redRHC <- db_abs_redRHC[!is_sd_redRHC]
+    db_rel_mean_redRHC <- db_rel_redRHC[!is_sd_redRHC]
+    b_old_mean_redRHC  <- b_old_redRHC[!is_sd_redRHC]
+
+    beta_ok_mean_redRHC <- all(
+      ifelse(
+        abs(b_old_mean_redRHC) < beta_switch_redRHC,
+        db_abs_mean_redRHC < beta_abs_tol_mean_redRHC,
+        db_rel_mean_redRHC < beta_rel_tol_mean_redRHC
+      ),
+      na.rm = TRUE
+    )
+
+    # Standard deviation parameters
+
+    db_abs_sd_redRHC <- db_abs_redRHC[is_sd_redRHC]
+    db_rel_sd_redRHC <- db_rel_redRHC[is_sd_redRHC]
+    b_old_sd_redRHC  <- b_old_redRHC[is_sd_redRHC]
+
+    beta_ok_sd_redRHC <- all(
+      ifelse(
+        abs(b_old_sd_redRHC) < beta_switch_redRHC,
+        db_abs_sd_redRHC < beta_abs_tol_sd_redRHC,
+        db_rel_sd_redRHC < beta_rel_tol_sd_redRHC
+      ),
+      na.rm = TRUE
+    )
+
+    beta_ok_redRHC <- beta_ok_mean_redRHC && beta_ok_sd_redRHC
+
+    se_ok_redRHC <- ifelse(
+      row_redRHC$metric_used_se == "rel",
+      row_redRHC$max_se_metric < se_rel_tol_redRHC,
+      row_redRHC$max_se_metric < se_abs_tol_redRHC
+    )
+
+    ll_ok_redRHC <- row_redRHC$dLL_rel < ll_rel_tol_redRHC
+
+    diag_tbl_R_redRHC <- rbind(diag_tbl_R_redRHC, row_redRHC)
+
+    # ---- Stopping conditions ----
+
+    if (
+      !is.na(beta_ok_redRHC) &&
+      !is.na(se_ok_redRHC) &&
+      !is.na(ll_ok_redRHC) &&
+      beta_ok_redRHC &&
+      se_ok_redRHC &&
+      ll_ok_redRHC
+    ) {
+      cat(">> The reduced MIXL-RHC model reached stability (mean, sd, SE and ΔLL_rel). Stop.\n")
+
+      prev_fit_redRHC   <- fit_redRHC_iter
+      prev_coefs_redRHC <- coefs_now_redRHC
+
+      break
+    }
+  }
+
+  # ---- UPPER LIMIT CONTROL ----
+
+  if (Rcurr_redRHC + step_R_redRHC > max_R_redRHC){
+
+    cat(sprintf(
+      ">> The reduced MIXL-RHC model reached max_R=%d without reaching all tolerance criteria. Stop.\n",
+      max_R_redRHC
+    ))
+
+    prev_fit_redRHC   <- fit_redRHC_iter
+    prev_coefs_redRHC <- coefs_now_redRHC
+
+    break
+  }
+
+  prev_fit_redRHC   <- fit_redRHC_iter
+  prev_coefs_redRHC <- coefs_now_redRHC
+  Rcurr_redRHC      <- Rcurr_redRHC + step_R_redRHC
+}
+
+# ===============================
+# 5) FINAL MODEL: REDUCED MIXL RHC
+# ===============================
+
+R_final_redRHC <- diag_tbl_R_redRHC$R[nrow(diag_tbl_R_redRHC)]
+
+mixlRHC_red <- fits_redRHC[[as.character(R_final_redRHC)]]
+
+cat(sprintf(
+  "\n[MIXL-RHC reduced final] R = %s | logLik = %.3f\n",
+  R_final_redRHC,
+  len1(logLik(mixlRHC_red))
+))
+
+summary(mixlRHC_red)
+
+# Iteration diagnosis
+diag_tbl_R_redRHC
+
+```
+
+
+
+
+### Spain Halton draws loop halton = list(c(2, 11, 7, 13)) BGFS method
+```{r}
+
+ set.seed(1685)
+# ===============================
+# 1) SPECIFICATION
+# ===============================
+form_mixlE2 <- Choice ~ 0 + Project + Specie + Location + Price +
+  ASC_accept + ASC_Att + ASC_SN + ASC_PBC + ASC_PYME + ASC_Service
+
+ranp <- c(
+  Project    = "n",
+  Specie     = "n",
+  Location   = "n",
+  ASC_accept = "n"
+)
+
+data <- df_mld_ESP
+
+# ===============================
+# 2) LOOP PARAMETERS
+# ===============================
+R_start <- 2000
+step_R  <- 200
+max_R   <- 8000
+
+# ---------------------------------------------------------------------------
+# Tolerance thresholds — grounded in discrete choice literature.
+# Full APA 6th references are listed separately in REFERENCES.md.
+#
+# beta_switch / se_switch:
+#   Below this |value|, use ABSOLUTE metric; above it, use RELATIVE metric.
+#   Set to 0.05: parameters near zero are essentially null and a relative
+#   criterion would be artificially loose (Train, 2009).
+#
+# Mean parameters (beta_abs/rel_tol_mean):
+#   0.001 (0.1% relative, or 0.001 absolute).
+#   Hensher & Greene (2003) "State of Practice": stability declared when
+#   parameters do not change in the third significant digit across draw counts.
+#   Train (2009): simulation error should be negligible relative to the
+#   sampling variance of the estimator.
+#
+# SD parameters (beta_abs/rel_tol_sd):
+#   Loosened to 0.005 (0.5%). Standard deviations of mixing distributions
+#   carry inherently higher simulation noise than means; Czajkowski &
+#   Budzinski (2019) set their Minimum Tolerance
+#   criterion at this order of magnitude for SDs estimated with Halton draws.
+#
+# SE tolerance (se_abs/rel_tol):
+#   Hess, Train & Polak (2006): simulation error in SEs
+#   should be evaluated relative to the SE magnitude itself.
+#   2% relative (0.02) is consistent with their Monte Carlo comparisons.
+#   Absolute fallback of 0.01 for near-zero SEs.
+#
+# Log-likelihood relative change (ll_rel_tol):
+#   1e-5. Train (2009): MSL is asymptotically equivalent to ML when R grows
+#   faster than sqrt(N); at that point ΔLL between consecutive R values
+#   should be negligible. 1e-5 is stricter than the typical optimizer
+#   convergence tolerance (1e-4) and consistent with Czajkowski & Budzinski
+#   (2019) simulation error benchmarks.
+# ---------------------------------------------------------------------------
+beta_switch        <- 0.05   # |b_old| threshold: abs vs. rel metric
+
+beta_abs_tol_mean  <- 0.001  # abs Δ tolerance for mean parameters
+beta_rel_tol_mean  <- 0.001  # rel Δ tolerance for mean parameters
+
+beta_abs_tol_sd    <- 0.005  # abs Δ tolerance for sd. parameters
+beta_rel_tol_sd    <- 0.005  # rel Δ tolerance for sd. parameters
+
+se_switch          <- 0.05   # SE threshold: abs vs. rel metric
+se_abs_tol         <- 0.010  # abs Δ tolerance for standard errors
+se_rel_tol         <- 0.020  # rel Δ tolerance for standard errors (2%)
+
+ll_rel_tol         <- 1e-5   # rel ΔLL tolerance across consecutive R values
+
+# ===============================
+# 3) SAFE WRAPPER CON BFGS
+# ===============================
+fit_gmnl_safe <- function(formula, data, ranp, R, corr = FALSE, start = NULL){
+  gmnl(formula, data=data, model="mixl", ranp=ranp, panel=TRUE,
+       R=R, halton=list(prime = c(2, 3, 5, 7)), correlation=corr,
+       method="bfgs", start=start)
+}
+
+# ===============================
+# 4) Stabilisation loop
+# ===============================
+fits_E <- list()
+diag_tbl_E <- data.frame(
+  R = integer(), logLik = numeric(),
+  max_beta_metric = numeric(), mover_beta = character(), metric_used_beta = character(),
+  max_se_metric   = numeric(), mover_se   = character(), metric_used_se   = character(),
+  dLL = numeric(), dLL_rel = numeric(),
+  stringsAsFactors = FALSE
+)
+
+prev_fit   <- NULL
+prev_coefs <- NULL
+Rcurr <- as.integer(R_start)
+
+repeat{
+  cat(sprintf("\n[gmnl] MIXL-E (corr=FALSE) con R = %d (Halton, BFGS) ...\n", Rcurr))
+  t0 <- Sys.time()
+  fitE <- fit_gmnl_safe(form_mixlE2, data = data, ranp = ranp,
+                        R = Rcurr, corr = FALSE, start = prev_coefs)
+  t1 <- Sys.time()
+  llE <- len1(logLik(fitE))
+  cat(sprintf("  Hecho en %.1f s | logLik = %.3f\n",
+              as.numeric(difftime(t1, t0, units="secs")), llE))
+
+  fits_E[[as.character(Rcurr)]] <- fitE
+  coefs_now <- tryCatch(coef(fitE), error=function(e) NULL)
+
+  if(is.null(prev_fit)){
+    diag_tbl_E <- rbind(diag_tbl_E, data.frame(
+      R = Rcurr, logLik = llE,
+      max_beta_metric = NA_real_, mover_beta = NA_character_, metric_used_beta = NA_character_,
+      max_se_metric   = NA_real_, mover_se   = NA_character_, metric_used_se   = NA_character_,
+      dLL = NA_real_, dLL_rel = NA_real_
+    ))
+  } else {
+    cmp <- compare_models_hybrid(fitE, prev_fit, beta_switch, se_switch)
+    dLL_abs <- len1(cmp$dll)
+    dLL_rel <- abs(dLL_abs) / (abs(len1(logLik(prev_fit))) + 1e-12)
+
+    cat(sprintf("  Summing up: max β-metric=%.6f | max SE-metric=%.6f | ΔLL_rel=%.6e\n",
+                len1(cmp$max_beta), len1(cmp$max_se), dLL_rel))
+
+    row <- data.frame(
+      R = Rcurr, logLik = llE,
+      max_beta_metric = len1(cmp$max_beta),
+      mover_beta      = cmp$top_beta$name,
+      metric_used_beta= cmp$top_beta$used,
+      max_se_metric   = len1(cmp$max_se),
+      mover_se        = cmp$top_se$name,
+      metric_used_se  = cmp$top_se$used,
+      dLL             = dLL_abs,
+      dLL_rel         = dLL_rel,
+      stringsAsFactors = FALSE
+    )
+
+    # ---- MEAN VS. SD separate criteria ----
+    b_new <- coef(fitE); b_old <- coef(prev_fit)
+    alln  <- union(names(b_new), names(b_old))
+    b_new <- b_new[alln]; b_old <- b_old[alln]
+    is_sd <- grepl("^sd\\.", alln)
+
+    db_abs <- abs(b_new - b_old)
+    db_rel <- abs(b_new - b_old) / (abs(b_old) + 1e-12)
+
+    # Mean
+    db_abs_mean <- db_abs[!is_sd]; db_rel_mean <- db_rel[!is_sd]; b_old_mean <- b_old[!is_sd]
+    beta_ok_mean <- all(ifelse(abs(b_old_mean) < beta_switch,
+                               db_abs_mean < beta_abs_tol_mean,
+                               db_rel_mean < beta_rel_tol_mean), na.rm = TRUE)
+
+    # Deviations
+    db_abs_sd <- db_abs[is_sd]; db_rel_sd <- db_rel[is_sd]; b_old_sd <- b_old[is_sd]
+    beta_ok_sd <- all(ifelse(abs(b_old_sd) < beta_switch,
+                             db_abs_sd < beta_abs_tol_sd,
+                             db_rel_sd < beta_rel_tol_sd), na.rm = TRUE)
+
+    beta_ok <- beta_ok_mean && beta_ok_sd
+    se_ok   <- ifelse(row$metric_used_se == "rel",
+                      row$max_se_metric < se_rel_tol,
+                      row$max_se_metric < se_abs_tol)
+    ll_ok   <- row$dLL_rel < ll_rel_tol
+
+    diag_tbl_E <- rbind(diag_tbl_E, row)
+
+    # ---- Stopping conditions ----
+    if (!is.na(beta_ok) && !is.na(se_ok) && !is.na(ll_ok) && beta_ok && se_ok && ll_ok) {
+      cat(">> The model reach stability (mean, sd, SE y ΔLL_rel). Stop.\n")
+      prev_fit   <- fitE
+      prev_coefs <- coefs_now
+      break
+    }
+  }
+
+  # ---- UPPER LIMIT CONTROL ----
+  if (Rcurr + step_R > max_R){
+    cat(sprintf(">> The model reach max_R=%d without reaching tolerance criteria. Stop.\n", max_R))
+    prev_fit   <- fitE
+    prev_coefs <- coefs_now
+    break
+  }
+
+  prev_fit   <- fitE
+  prev_coefs <- coefs_now
+  Rcurr      <- Rcurr + step_R
+}
+
+# ===============================
+# 5) Final model
+# ===============================
+R_final_E   <- diag_tbl_E$R[nrow(diag_tbl_E)]
+mixlESP <- fits_E[[as.character(R_final_E)]]
+
+cat(sprintf("\n[MIXL-E final)] R = %s | logLik = %.3f\n",
+            R_final_E, len1(logLik(mixlESP))))
+summary(mixlESP)
+
+# Iteration's diagnose
+diag_tbl_E
+
+```
+#### Reduced mixed logit 
+
+```{r}
+#set.seed(1685)semilla del modelo reportado, no borrar
+set.seed(0611) #nueva semilla para comprobar estabilidad
+# ===============================
+# 1) SPECIFICATION: MIXL REDUCED ESP
+# Project and Specie remain in utility, but are treated as fixed parameters
+# Random parameters: Location and ASC_accept only
+# ===============================
+
+form_mixl_redESP <- Choice ~ 0 + Project + Specie + Location + Price +
+  ASC_accept + ASC_Att + ASC_SN + ASC_PBC + ASC_PYME + ASC_Service
+
+ranp_redESP <- c(
+  Location   = "n",
+  ASC_accept = "n"
+)
+
+data_redESP <- df_mld_ESP
+
+# ===============================
+# 2) LOOP PARAMETERS
+# ===============================
+
+R_start_redESP <- 3400
+step_R_redESP  <- 200
+max_R_redESP   <- 4000
+
+# ---------------------------------------------------------------------------
+# Tolerance thresholds — same criteria as the full Spain mixed logit loop.
+# Full APA 6th references are listed separately in REFERENCES.md.
+#
+# beta_switch / se_switch = 0.05: use absolute differences near zero and
+# relative differences otherwise (Train, 2009).
+# Mean parameters = 0.001: stability in approximately the third significant
+# digit across draw counts (Hensher & Greene, 2003; Train, 2009).
+# SD parameters = 0.005: looser criterion for mixing-distribution standard
+# deviations, which are more simulation-noisy (Czajkowski & Budzinski, 2019).
+# SE tolerance = 0.010 absolute / 0.020 relative: evaluate simulation error
+# relative to the SE magnitude itself (Hess, Train & Polak, 2006).
+# Log-likelihood tolerance = 1e-5: negligible relative change across
+# consecutive draw counts (Train, 2009; Czajkowski & Budzinski, 2019).
+# ---------------------------------------------------------------------------
+
+beta_switch_redESP        <- 0.05
+
+beta_abs_tol_mean_redESP  <- 0.001
+beta_rel_tol_mean_redESP  <- 0.001
+
+beta_abs_tol_sd_redESP    <- 0.005
+beta_rel_tol_sd_redESP    <- 0.005
+
+se_switch_redESP          <- 0.05
+se_abs_tol_redESP         <- 0.010
+se_rel_tol_redESP         <- 0.020
+
+ll_rel_tol_redESP         <- 1e-5
+
+# ===============================
+# 3) SAFE WRAPPER WITH BFGS
+# ===============================
+
+fit_gmnl_safe_redESP <- function(formula, data, ranp, R, corr = FALSE, start = NULL){
+  gmnl(
+    formula,
+    data = data,
+    model = "mixl",
+    ranp = ranp,
+    panel = TRUE,
+    R = R,
+    halton = list(prime = c(2, 3)),
+    correlation = corr,
+    method = "bfgs",
+    start = start
+  )
+}
+
+# ===============================
+# 4) STABILISATION LOOP
+# ===============================
+
+fits_redESP <- list()
+
+diag_tbl_R_redESP <- data.frame(
+  R = integer(),
+  logLik = numeric(),
+  max_beta_metric = numeric(),
+  mover_beta = character(),
+  metric_used_beta = character(),
+  max_se_metric = numeric(),
+  mover_se = character(),
+  metric_used_se = character(),
+  dLL = numeric(),
+  dLL_rel = numeric(),
+  stringsAsFactors = FALSE
+)
+
+prev_fit_redESP   <- NULL
+prev_coefs_redESP <- NULL
+Rcurr_redESP      <- as.integer(R_start_redESP)
+
+repeat{
+
+  cat(sprintf(
+    "\n[gmnl] MIXL-ESP reduced (corr=FALSE) con R = %d (Halton, BFGS) ...\n",
+    Rcurr_redESP
+  ))
+
+  t0_redESP <- Sys.time()
+
+  fit_redESP_iter <- fit_gmnl_safe_redESP(
+    formula = form_mixl_redESP,
+    data    = data_redESP,
+    ranp    = ranp_redESP,
+    R       = Rcurr_redESP,
+    corr    = FALSE,
+    start   = prev_coefs_redESP
+  )
+
+  t1_redESP <- Sys.time()
+
+  ll_redESP_iter <- len1(logLik(fit_redESP_iter))
+
+  cat(sprintf(
+    "  Hecho en %.1f s | logLik = %.3f\n",
+    as.numeric(difftime(t1_redESP, t0_redESP, units = "secs")),
+    ll_redESP_iter
+  ))
+
+  fits_redESP[[as.character(Rcurr_redESP)]] <- fit_redESP_iter
+
+  coefs_now_redESP <- tryCatch(
+    coef(fit_redESP_iter),
+    error = function(e) NULL
+  )
+
+  if(is.null(prev_fit_redESP)){
+
+    diag_tbl_R_redESP <- rbind(
+      diag_tbl_R_redESP,
+      data.frame(
+        R = Rcurr_redESP,
+        logLik = ll_redESP_iter,
+        max_beta_metric = NA_real_,
+        mover_beta = NA_character_,
+        metric_used_beta = NA_character_,
+        max_se_metric = NA_real_,
+        mover_se = NA_character_,
+        metric_used_se = NA_character_,
+        dLL = NA_real_,
+        dLL_rel = NA_real_,
+        stringsAsFactors = FALSE
+      )
+    )
+
+  } else {
+
+    cmp_redESP <- compare_models_hybrid(
+      fit_redESP_iter,
+      prev_fit_redESP,
+      beta_switch_redESP,
+      se_switch_redESP
+    )
+
+    dLL_abs_redESP <- len1(cmp_redESP$dll)
+
+    dLL_rel_redESP <- abs(dLL_abs_redESP) /
+      (abs(len1(logLik(prev_fit_redESP))) + 1e-12)
+
+    cat(sprintf(
+      "  Summing up: max β-metric=%.6f | max SE-metric=%.6f | ΔLL_rel=%.6e\n",
+      len1(cmp_redESP$max_beta),
+      len1(cmp_redESP$max_se),
+      dLL_rel_redESP
+    ))
+
+    row_redESP <- data.frame(
+      R = Rcurr_redESP,
+      logLik = ll_redESP_iter,
+      max_beta_metric = len1(cmp_redESP$max_beta),
+      mover_beta = cmp_redESP$top_beta$name,
+      metric_used_beta = cmp_redESP$top_beta$used,
+      max_se_metric = len1(cmp_redESP$max_se),
+      mover_se = cmp_redESP$top_se$name,
+      metric_used_se = cmp_redESP$top_se$used,
+      dLL = dLL_abs_redESP,
+      dLL_rel = dLL_rel_redESP,
+      stringsAsFactors = FALSE
+    )
+
+    # ---- MEAN VS. SD separate criteria ----
+
+    b_new_redESP <- coef(fit_redESP_iter)
+    b_old_redESP <- coef(prev_fit_redESP)
+
+    alln_redESP <- union(names(b_new_redESP), names(b_old_redESP))
+
+    b_new_redESP <- b_new_redESP[alln_redESP]
+    b_old_redESP <- b_old_redESP[alln_redESP]
+
+    is_sd_redESP <- grepl("^sd\\.", alln_redESP)
+
+    db_abs_redESP <- abs(b_new_redESP - b_old_redESP)
+
+    db_rel_redESP <- abs(b_new_redESP - b_old_redESP) /
+      (abs(b_old_redESP) + 1e-12)
+
+    # Mean parameters
+
+    db_abs_mean_redESP <- db_abs_redESP[!is_sd_redESP]
+    db_rel_mean_redESP <- db_rel_redESP[!is_sd_redESP]
+    b_old_mean_redESP  <- b_old_redESP[!is_sd_redESP]
+
+    beta_ok_mean_redESP <- all(
+      ifelse(
+        abs(b_old_mean_redESP) < beta_switch_redESP,
+        db_abs_mean_redESP < beta_abs_tol_mean_redESP,
+        db_rel_mean_redESP < beta_rel_tol_mean_redESP
+      ),
+      na.rm = TRUE
+    )
+
+    # Standard deviation parameters
+
+    db_abs_sd_redESP <- db_abs_redESP[is_sd_redESP]
+    db_rel_sd_redESP <- db_rel_redESP[is_sd_redESP]
+    b_old_sd_redESP  <- b_old_redESP[is_sd_redESP]
+
+    beta_ok_sd_redESP <- all(
+      ifelse(
+        abs(b_old_sd_redESP) < beta_switch_redESP,
+        db_abs_sd_redESP < beta_abs_tol_sd_redESP,
+        db_rel_sd_redESP < beta_rel_tol_sd_redESP
+      ),
+      na.rm = TRUE
+    )
+
+    beta_ok_redESP <- beta_ok_mean_redESP && beta_ok_sd_redESP
+
+    se_ok_redESP <- ifelse(
+      row_redESP$metric_used_se == "rel",
+      row_redESP$max_se_metric < se_rel_tol_redESP,
+      row_redESP$max_se_metric < se_abs_tol_redESP
+    )
+
+    ll_ok_redESP <- row_redESP$dLL_rel < ll_rel_tol_redESP
+
+    diag_tbl_R_redESP <- rbind(diag_tbl_R_redESP, row_redESP)
+
+    # ---- Stopping conditions ----
+
+    if (
+      !is.na(beta_ok_redESP) &&
+      !is.na(se_ok_redESP) &&
+      !is.na(ll_ok_redESP) &&
+      beta_ok_redESP &&
+      se_ok_redESP &&
+      ll_ok_redESP
+    ) {
+      cat(">> The reduced MIXL-ESP model reached stability (mean, sd, SE and ΔLL_rel). Stop.\n")
+
+      prev_fit_redESP   <- fit_redESP_iter
+      prev_coefs_redESP <- coefs_now_redESP
+
+      break
+    }
+  }
+
+  # ---- UPPER LIMIT CONTROL ----
+
+  if (Rcurr_redESP + step_R_redESP > max_R_redESP){
+
+    cat(sprintf(
+      ">> The reduced MIXL-ESP model reached max_R=%d without reaching all tolerance criteria. Stop.\n",
+      max_R_redESP
+    ))
+
+    prev_fit_redESP   <- fit_redESP_iter
+    prev_coefs_redESP <- coefs_now_redESP
+
+    break
+  }
+
+  prev_fit_redESP   <- fit_redESP_iter
+  prev_coefs_redESP <- coefs_now_redESP
+  Rcurr_redESP      <- Rcurr_redESP + step_R_redESP
+}
+
+# ===============================
+# 5) FINAL MODEL: REDUCED MIXL ESP
+# ===============================
+
+R_final_redESP <- diag_tbl_R_redESP$R[nrow(diag_tbl_R_redESP)]
+
+mixlESP_red <- fits_redESP[[as.character(R_final_redESP)]]
+
+cat(sprintf(
+  "\n[MIXL-ESP reduced final] R = %s | logLik = %.3f\n",
+  R_final_redESP,
+  len1(logLik(mixlESP_red))
+))
+
+summary(mixlESP_red)
+
+# Iteration diagnosis
+diag_tbl_R_redESP
+```
+
+
+### LR test to choose random parameters
+#### Registry
+```{r}
+# ===============================
+# 6) MODEL COMPARISON
+# ===============================
+
+ll_full_RHC <- as.numeric(logLik(mixlRHC))
+ll_red_RHC  <- as.numeric(logLik(mixlRHC_red))
+
+LR_red_vs_full_RHC <- 2 * (ll_full_RHC - ll_red_RHC)
+
+df_red_vs_full_RHC <- length(coef(mixlRHC)) - length(coef(mixlRHC_red))
+
+p_LRT_standard_RHC <- pchisq(
+  LR_red_vs_full_RHC,
+  df = df_red_vs_full_RHC,
+  lower.tail = FALSE
+)
+
+comparison_redRHC <- data.frame(
+  model = c("Full MIXL", "Reduced MIXL"),
+  logLik = c(ll_full_RHC, ll_red_RHC),
+  npar = c(length(coef(mixlRHC)), length(coef(mixlRHC_red))),
+  AIC = c(AIC(mixlRHC), AIC(mixlRHC_red)),
+  BIC = c(BIC(mixlRHC), BIC(mixlRHC_red))
+)
+
+comparison_redRHC
+
+cat("\nLikelihood-ratio test: full vs reduced MIXL\n")
+cat("LR statistic:", LR_red_vs_full_RHC, "\n")
+cat("df:", df_red_vs_full_RHC, "\n")
+cat("standard p-value:", p_LRT_standard_RHC, "\n")
+
+
+# ===============================
+# 7) COEFFICIENT STABILITY: FULL VS REDUCED
+# ===============================
+
+coef_full_RHC <- coef(mixlRHC)
+coef_red_RHC  <- coef(mixlRHC_red)
+
+common_coef_RHC <- intersect(names(coef_full_RHC), names(coef_red_RHC))
+
+coef_compare_redRHC <- data.frame(
+  parameter = common_coef_RHC,
+  full = coef_full_RHC[common_coef_RHC],
+  reduced = coef_red_RHC[common_coef_RHC],
+  abs_diff = abs(coef_red_RHC[common_coef_RHC] - coef_full_RHC[common_coef_RHC]),
+  rel_diff = abs(coef_red_RHC[common_coef_RHC] - coef_full_RHC[common_coef_RHC]) /
+    (abs(coef_full_RHC[common_coef_RHC]) + 1e-12)
+)
+
+coef_compare_redRHC
+
+
+```
+
+#### Spain
+
+```{r}
+# ===============================
+# 6) MODEL COMPARISON: FULL VS REDUCED ESP
+# ===============================
+
+ll_full_ESP <- as.numeric(logLik(mixlESP))
+ll_red_ESP  <- as.numeric(logLik(mixlESP_red))
+
+LR_red_vs_full_ESP <- 2 * (ll_full_ESP - ll_red_ESP)
+
+df_red_vs_full_ESP <- length(coef(mixlESP)) - length(coef(mixlESP_red))
+
+p_LRT_standard_ESP <- pchisq(
+  LR_red_vs_full_ESP,
+  df = df_red_vs_full_ESP,
+  lower.tail = FALSE
+)
+
+comparison_redESP <- data.frame(
+  model = c("Full MIXL ESP", "Reduced MIXL ESP"),
+  logLik = c(ll_full_ESP, ll_red_ESP),
+  npar = c(length(coef(mixlESP)), length(coef(mixlESP_red))),
+  AIC = c(AIC(mixlESP), AIC(mixlESP_red)),
+  BIC = c(BIC(mixlESP), BIC(mixlESP_red))
+)
+
+comparison_redESP
+
+cat("\nLikelihood-ratio test: full vs reduced MIXL ESP\n")
+cat("LR statistic:", LR_red_vs_full_ESP, "\n")
+cat("df:", df_red_vs_full_ESP, "\n")
+cat("standard p-value:", p_LRT_standard_ESP, "\n")
+
+# ===============================
+# 7) COEFFICIENT STABILITY: FULL VS REDUCED ESP
+# ===============================
+
+coef_full_ESP <- coef(mixlESP)
+coef_red_ESP  <- coef(mixlESP_red)
+
+common_coef_ESP <- intersect(names(coef_full_ESP), names(coef_red_ESP))
+
+coef_compare_redESP <- data.frame(
+  parameter = common_coef_ESP,
+  full = coef_full_ESP[common_coef_ESP],
+  reduced = coef_red_ESP[common_coef_ESP],
+  abs_diff = abs(coef_red_ESP[common_coef_ESP] - coef_full_ESP[common_coef_ESP]),
+  rel_diff = abs(coef_red_ESP[common_coef_ESP] - coef_full_ESP[common_coef_ESP]) /
+    (abs(coef_full_ESP[common_coef_ESP]) + 1e-12)
+)
+
+coef_compare_redESP
+
+```
+
+
+
+### Model fit
+```{r}
+AIC(mixlRHC_red)
+AIC(mixlESP_red)
+BIC(mixlRHC_red)
+BIC(mixlESP_red)
+
+##Mixed logit
+# Log-likelihood 
+ll_modelA <- as.numeric(logLik(mixlRHC_red))
+
+# Log-likelihood null model 
+ll_nullA <- as.numeric(logLik(mlogit(Choice ~ 1, data = df_mld_RHC)))
+
+# McFadden's pseudo-R2 for discrete choice model fit (McFadden, 1974).
+# Full reference: REFERENCES.md.
+R2_McFaddenA <- 1 - (ll_modelA / ll_nullA)
+R2_McFaddenA
+
+
+#Segment B
+# Log-likelihood del modelo estimado
+ll_modelB <- as.numeric(logLik(mixlESP_red))
+
+# Log-likelihood null model
+ll_nullB <- as.numeric(logLik(mlogit(Choice ~ 1, data = df_mld_ESP)))
+
+# McFadden's pseudo-R2 for discrete choice model fit (McFadden, 1974).
+# Full reference: REFERENCES.md.
+R2_McFaddenB <- 1 - (ll_modelB / ll_nullB)
+R2_McFaddenB
+
+```
+
+## Willigness to pay estimations
+
+### Krinsky-Robb
+
+#### Registry
+
+```{r}
+##WTP
+# Krinsky-Robb WTP intervals: simulate parameter draws from the estimated
+# coefficient vector and variance-covariance matrix (Krinsky & Robb, 1986,
+# 1990). Full references: REFERENCES.md.
+# Coefs y VCOV
+
+
+# WTP attributes
+attrs <- c("Project","Specie","Location")
+
+
+set.seed(0611)
+SR <- 20000  # nº de draws
+bR   <- coef(mixlRHC_red)
+VR   <- vcov(mixlRHC_red)
+
+# Takes draws from the parametric vector
+draws <- MASS::mvrnorm(n = SR, mu = bR, Sigma = VR)
+
+# Helper to extraxt values in named columns
+col_ix <- function(nm) match(nm, names(bR))
+
+wtp_kr <- lapply(attrs, function(attr){
+  bk <- draws[, col_ix(attr)]
+  bp <- draws[, col_ix("Price")]
+  w  <- -2* bk / bp
+  data.frame(attribute=attr,
+             WTP_mean = mean(w, na.rm=TRUE),
+             Q2.5 = quantile(w, 0.025, na.rm=TRUE),
+             Q97.5 = quantile(w, 0.975, na.rm=TRUE))
+})
+wtp_table_kr <- bind_rows(wtp_kr)
+print(wtp_table_kr)
+
+bp <- draws[, col_ix("Price")]
+
+wtp_total_draws <- rowSums(
+  sapply(attrs, function(attr) {
+    bk <- draws[, col_ix(attr)]
+    -2 * bk / bp
+  })
+)
+
+wtp_total_row <- data.frame(
+  attribute = "Total",
+  WTP_mean  = mean(wtp_total_draws, na.rm = TRUE),
+  Q2.5      = quantile(wtp_total_draws, 0.025, na.rm = TRUE),
+  Q97.5     = quantile(wtp_total_draws, 0.975, na.rm = TRUE)
+)
+
+wtp_table_kr <- bind_rows(wtp_table_kr, wtp_total_row)
+print(wtp_table_kr)
+
+```
+
+#### Spain
+
+```{r}
+# ===============================
+# WTP ESPAÑA — mixlESP_red2
+# ===============================
+# Krinsky-Robb WTP intervals: simulate parameter draws from the estimated
+# coefficient vector and variance-covariance matrix (Krinsky & Robb, 1986,
+# 1990). Full references: REFERENCES.md.
+attrsE <- c("Project", "Specie", "Location")
+set.seed(0611)
+SE <- 20000
+
+bE <- coef(mixlESP_red)
+VE <- vcov(mixlESP_red)
+
+# col_ix PROPIO para España — apunta a bE, no a bR
+col_ix_E <- function(nm) match(nm, names(bE))
+
+drawsE <- MASS::mvrnorm(n = SE, mu = bE, Sigma = VE)
+
+# WTP por atributo
+wtp_kr_E <- lapply(attrsE, function(attrE) {
+  bkE <- drawsE[, col_ix_E(attrE)]
+  bpE <- drawsE[, col_ix_E("Price")]
+  wE  <- -2 * bkE / bpE          # ajusta a -2*bkE/bpE si tu Price está dividido por 2
+  data.frame(
+    attribute = attrE,
+    WTP_mean  = mean(wE, na.rm = TRUE),
+    Q2.5      = quantile(wE, 0.025, na.rm = TRUE),
+    Q97.5     = quantile(wE, 0.975, na.rm = TRUE)
+  )
+})
+
+# WTP total (draw a draw)
+bpE_vec <- drawsE[, col_ix_E("Price")]
+wtp_total_draws_E <- rowSums(
+  sapply(attrsE, function(attrE) {
+    bkE <- drawsE[, col_ix_E(attrE)]
+    -2 * bkE / bpE_vec             # mismo factor que arriba
+  })
+)
+
+wtp_total_row_E <- data.frame(
+  attribute = "Total",
+  WTP_mean  = mean(wtp_total_draws_E, na.rm = TRUE),
+  Q2.5      = quantile(wtp_total_draws_E, 0.025, na.rm = TRUE),
+  Q97.5     = quantile(wtp_total_draws_E, 0.975, na.rm = TRUE)
+)
+
+wtp_table_kr_E <- bind_rows(wtp_kr_E, wtp_total_row_E)
+print(wtp_table_kr_E)
+
+
+```
+
+## Willigness to pay estimations: 10/100€ tCO2
+
+### Krinsky-Robb
+
+#### Registry
+
+```{r}
+##WTP
+# Coefs y VCOV
+
+
+# WTP attributes
+attrs <- c("Project","Specie","Location")
+
+
+set.seed(0611)
+SR <- 20000  # nº de draws
+bR   <- coef(mixlRHC_red)
+VR   <- vcov(mixlRHC_red)
+
+# Takes draws from the parametric vector
+draws <- MASS::mvrnorm(n = SR, mu = bR, Sigma = VR)
+
+# Helper to extraxt values in named columns
+col_ix <- function(nm) match(nm, names(bR))
+
+wtp_kr <- lapply(attrs, function(attr){
+  bk <- draws[, col_ix(attr)]
+  bp <- draws[, col_ix("Price")]
+  w  <- -2* bk / bp
+  data.frame(attribute=attr,
+             WTP_mean = mean(w, na.rm=TRUE),
+             Q2.5 = quantile(w, 0.025, na.rm=TRUE),
+             Q97.5 = quantile(w, 0.975, na.rm=TRUE))
+})
+wtp_table_kr <- bind_rows(wtp_kr)
+print(wtp_table_kr)
+
+bp <- draws[, col_ix("Price")]
+
+wtp_total_draws <- rowSums(
+  sapply(attrs, function(attr) {
+    bk <- draws[, col_ix(attr)]
+    -2 * bk / bp
+  })
+)
+
+wtp_total_row <- data.frame(
+  attribute = "Total",
+  WTP_mean  = mean(wtp_total_draws, na.rm = TRUE),
+  Q2.5      = quantile(wtp_total_draws, 0.025, na.rm = TRUE),
+  Q97.5     = quantile(wtp_total_draws, 0.975, na.rm = TRUE)
+)
+
+wtp_table_kr <- bind_rows(wtp_table_kr, wtp_total_row)
+print(wtp_table_kr)
+
+```
+
+#### Spain
+
+```{r}
+# ===============================
+# WTP ESPAÑA — mixlESP_red2
+# ===============================
+attrsE <- c("Project", "Specie", "Location")
+set.seed(0611)
+SE <- 20000
+
+bE <- coef(mixlESP_red)
+VE <- vcov(mixlESP_red)
+
+# col_ix PROPIO para España — apunta a bE, no a bR
+col_ix_E <- function(nm) match(nm, names(bE))
+
+drawsE <- MASS::mvrnorm(n = SE, mu = bE, Sigma = VE)
+
+# WTP por atributo
+wtp_kr_E <- lapply(attrsE, function(attrE) {
+  bkE <- drawsE[, col_ix_E(attrE)]
+  bpE <- drawsE[, col_ix_E("Price")]
+  wE  <- -2 * bkE / bpE          # ajusta a -2*bkE/bpE si tu Price está dividido por 2
+  data.frame(
+    attribute = attrE,
+    WTP_mean  = mean(wE, na.rm = TRUE),
+    Q2.5      = quantile(wE, 0.025, na.rm = TRUE),
+    Q97.5     = quantile(wE, 0.975, na.rm = TRUE)
+  )
+})
+
+# WTP total (draw a draw)
+bpE_vec <- drawsE[, col_ix_E("Price")]
+wtp_total_draws_E <- rowSums(
+  sapply(attrsE, function(attrE) {
+    bkE <- drawsE[, col_ix_E(attrE)]
+    -2 * bkE / bpE_vec             # mismo factor que arriba
+  })
+)
+
+wtp_total_row_E <- data.frame(
+  attribute = "Total",
+  WTP_mean  = mean(wtp_total_draws_E, na.rm = TRUE),
+  Q2.5      = quantile(wtp_total_draws_E, 0.025, na.rm = TRUE),
+  Q97.5     = quantile(wtp_total_draws_E, 0.975, na.rm = TRUE)
+)
+
+wtp_table_kr_E <- bind_rows(wtp_kr_E, wtp_total_row_E)
+print(wtp_table_kr_E)
+
+
+```
+
+
+
+
+
+## Latent class model: Number of classes selection
+
+### Data importation
+```{r}
+database <- as.data.frame(
+  read_excel(data_path,
+             sheet = "Todo_II") %>%
+    mutate(
+      Project    = ifelse(Optout == 1 & Project  == -4, 0, Project),
+      Specie     = ifelse(Optout == 1 & Specie   == -4, 0, Specie),
+      Location   = ifelse(Optout == 1 & Location == -4, 0, Location),
+      Price      = ifelse(Optout == 1 & Price    == -4, 0, Price),
+      ASC_accept = as.numeric(ifelse(Optout == 1, 0, 1)),
+      alt_id     = ifelse(Optout == 0, 1, 2),
+      chid       = paste(Id, ParentQuestionId, QuestionId, sep = "_")
+    ) %>%
+    group_by(chid) %>%
+    mutate(choiceVar = alt_id[which(Choice == 1)][1]) %>%
+    ungroup()
+)
+
+n_indiv <- length(unique(database$Id))
+n_cs    <- length(unique(database$chid))
+n_obs   <- nrow(database)
+cat("Individuos:", n_indiv, "| Choice sets:", n_cs,
+    "| Observaciones:", n_obs, "\n")
+
+
+# LL(0) correct: -n_obs * log(J), J = 2 alternatives
+LL0_correct <- -n_obs * log(2)
+
+```
+
+
+### Two classes model
+
+#### Diagnosis function
+
+
+```{r}
+diagnosticos_LC <- function(model, C, apollo_probabilities,
+                             apollo_inputs, n_indiv) {
+
+  # Latent class selection diagnostics combine information criteria
+  # (Akaike, 1974; Schwarz, 1978), McFadden rho2 (McFadden, 1974),
+  # posterior classification diagnostics and entropy, plus convergence and
+  # a valid covariance matrix. APCP/AvePP and OCC follow Nagin (2005) and
+  # PROC LCA guidance (Lanza et al., 2007, 2015); entropy follows Celeux &
+  # Soromenho (1996), Nylund, Asparouhov & Muthen (2007), and Latent GOLD
+  # reference guidance (Vermunt & Magidson, 2005).
+  # Full references: REFERENCES.md.
+
+  ll  <- as.numeric(model$LLout[1])
+  k   <- length(model$estimate)
+  nms <- names(model$LLout)
+
+  # LL0 correct (n_obs, no n_cs)
+  LL0 <- LL0_correct
+
+  # LLc from Apollo
+  LLc <- if ("LL(c)" %in% nms) as.numeric(model$LLout["LL(c)"])
+         else if ("LLc" %in% nms) as.numeric(model$LLout["LLc"])
+         else ll
+
+  aic    <- -2 * ll + 2 * k
+  bic    <- -2 * ll + k * log(n_cs)
+  rho2_0 <- as.numeric(1 - ll / LL0)
+  rho2_c <- as.numeric(1 - ll / LLc)
+
+  unconditionals <- apollo_lcUnconditionals(
+    model, apollo_probabilities, apollo_inputs)
+  n_cl        <- length(unconditionals[["pi_values"]])
+  class_sizes <- colMeans(matrix(unlist(unconditionals[["pi_values"]]),
+                                  ncol = n_cl, byrow = FALSE))
+
+  conditionals <- apollo_lcConditionals(
+    model, apollo_probabilities, apollo_inputs)
+
+  avg_post_prob <- colMeans(conditionals[, 2:(C + 1)])
+
+  modal_assign <- apply(conditionals[, 2:(C + 1)], 1, which.max)
+  modal_counts <- as.vector(table(factor(modal_assign, levels = 1:C)))
+  modal_shares <- modal_counts / n_indiv
+
+  post_mat  <- as.matrix(conditionals[, 2:(C + 1)])
+  post_mat  <- pmax(post_mat, 1e-10)
+  entropy_n <- -rowSums(post_mat * log(post_mat))
+  entropy   <- 1 - mean(entropy_n) / log(C)
+
+  apcp_modal <- numeric(C)
+  for (q in seq_len(C)) {
+    idx <- which(modal_assign == q)
+    apcp_modal[q] <- if (length(idx) > 0) mean(post_mat[idx, q]) else NA
+  }
+  apcp_modal <- pmin(apcp_modal, 0.9999)
+  occ <- (apcp_modal / (1 - apcp_modal)) / (class_sizes / (1 - class_sizes))
+
+  list(C = C, LL = round(ll, 2), AIC = round(aic, 2),
+       BIC = round(bic, 2), npar = k,
+       rho2_0 = round(rho2_0, 4), rho2_c = round(rho2_c, 4),
+       entropy  = round(entropy, 4),
+       class_sizes   = round(class_sizes,   4),
+       avg_post_prob = round(avg_post_prob, 4),  # APCP global (para tabla)
+       apcp_modal    = round(apcp_modal,    4),  # APCP modal  (para OCC)
+       modal_shares  = round(modal_shares,  4),
+       occ           = round(occ, 3))
+}
+
+```
+
+#### Apollo: beta, fixed, lcPars
+
+
+```{r}
+cat("\n", strrep("=", 60), "\n")
+cat("  ESTIMATING C = 2 CLASSES\n")
+cat(strrep("=", 60), "\n")
+
+apollo_control <- list(
+  modelName = "LC_2cl", modelDescr = "LC 2 clasSes",
+  indivID = "Id", mixing = FALSE, nCores = 1,
+  outputDirectory = "output"
+)
+
+apollo_beta <- c(
+  asc_a = 1.0, asc_b = -1.0,
+  b_Project_a  = 0.10, b_Specie_a  = 0.10,
+  b_Location_a = 0.20, b_Price_log_a = -3.91,
+  b_Project_b  = 0.10, b_Specie_b  = 0.10,
+  b_Location_b = 0.20, b_Price_log_b = -3.91,
+  delta_a = 0.0, delta_b = 0.0
+)
+apollo_fixed <- "delta_b"
+
+apollo_lcPars <- function(apollo_beta, apollo_inputs) {
+  lcpars <- list(
+    asc        = list(asc_a,        asc_b),
+    b_Project  = list(b_Project_a,  b_Project_b),
+    b_Specie   = list(b_Specie_a,   b_Specie_b),
+    b_Location = list(b_Location_a, b_Location_b),
+    b_Price    = list(-exp(b_Price_log_a), -exp(b_Price_log_b))
+  )
+  V_class <- list(class_a = delta_a, class_b = delta_b)
+  lcpars[["pi_values"]] <- apollo_classAlloc(list(
+    classes = c(class_a = 1, class_b = 2),
+    utilities = V_class, componentName = "classAlloc"))
+  return(lcpars)
+}
+```
+
+#### Apollo probabilities and inputs
+```{r}
+apollo_probabilities <- function(apollo_beta, apollo_inputs,
+                                 functionality = "estimate") {
+  apollo_attach(apollo_beta, apollo_inputs)
+  on.exit(apollo_detach(apollo_beta, apollo_inputs))
+  P     <- list()
+  mnl_s <- list(alternatives = c(project = 1, optout = 2),
+                avail        = list(project = 1, optout = 1),
+                choiceVar    = choiceVar)
+  for (s in 1:2) {
+    V <- list()
+    V[["project"]] <- asc[[s]] * ASC_accept +
+      b_Project[[s]] * Project + b_Specie[[s]] * Specie +
+      b_Location[[s]] * Location + b_Price[[s]] * Price
+    V[["optout"]] <- 0
+    mnl_s$utilities     <- V
+    mnl_s$componentName <- paste0("Class_", s)
+    P[[paste0("Class_", s)]] <- apollo_mnl(mnl_s, functionality)
+    P[[paste0("Class_", s)]] <- apollo_panelProd(
+      P[[paste0("Class_", s)]], apollo_inputs, functionality)
+  }
+  P[["model"]] <- apollo_lc(
+    list(inClassProb = P, classProb = pi_values),
+    apollo_inputs, functionality)
+  return(apollo_prepareProb(P, apollo_inputs, functionality))
+}
+
+apollo_inputs <- apollo_validateInputs()
+model_2cl <- apollo_estimate(
+  apollo_beta, apollo_fixed,
+  apollo_probabilities, apollo_inputs,
+  estimate_settings = list(estimationRoutine = "bgw",
+    maxIterations = 2000, writeIter = FALSE, numDeriv = TRUE))
+apollo_saveOutput(model_2cl)
+apollo_sink()
+```
+
+
+
+#### 2 classes results
+
+```{r}
+res_2 <- diagnosticos_LC(model_2cl, 2, apollo_probabilities,
+                          apollo_inputs, n_indiv)
+```
+
+
+
+
+### Three classes model
+#### Apollo: beta, fixed, lcPars
+
+
+```{r}
+cat("\n", strrep("=", 60), "\n")
+cat("  ESTIMANDO C = 3 CLASSES\n")
+cat(strrep("=", 60), "\n")
+
+apollo_control <- list(
+  modelName = "LC_3cl", modelDescr = "LC 3 classes",
+  indivID = "Id", mixing = FALSE, nCores = 1,
+  outputDirectory = "output"
+)
+
+apollo_beta <- c(
+  asc_a = 1.0, asc_b = -1.0, asc_c = 0.2,
+  b_Project_a  = 0.10, b_Specie_a  = 0.10,
+  b_Location_a = 0.20, b_Price_log_a = -3.91,
+  b_Project_b  = 0.10, b_Specie_b  = 0.10,
+  b_Location_b = 0.20, b_Price_log_b = -3.91,
+  b_Project_c  = 0.10, b_Specie_c  = 0.10,
+  b_Location_c = 0.20, b_Price_log_c = -3.91,
+  delta_a = 0.0, delta_b = 0.0, delta_c = 0.0
+)
+apollo_fixed <- "delta_c"
+
+apollo_lcPars <- function(apollo_beta, apollo_inputs) {
+  lcpars <- list(
+    asc        = list(asc_a,        asc_b,        asc_c),
+    b_Project  = list(b_Project_a,  b_Project_b,  b_Project_c),
+    b_Specie   = list(b_Specie_a,   b_Specie_b,   b_Specie_c),
+    b_Location = list(b_Location_a, b_Location_b, b_Location_c),
+    b_Price    = list(-exp(b_Price_log_a),
+                      -exp(b_Price_log_b),
+                      -exp(b_Price_log_c))
+  )
+  V_class <- list(class_a = delta_a,
+                  class_b = delta_b,
+                  class_c = delta_c)
+  lcpars[["pi_values"]] <- apollo_classAlloc(list(
+    classes = c(class_a = 1, class_b = 2, class_c = 3),
+    utilities = V_class, componentName = "classAlloc"))
+  return(lcpars)
+}
+
+```
+
+
+#### Apollo: probabilities and inputs
+
+```{r}
+
+apollo_probabilities <- function(apollo_beta, apollo_inputs,
+                                 functionality = "estimate") {
+  apollo_attach(apollo_beta, apollo_inputs)
+  on.exit(apollo_detach(apollo_beta, apollo_inputs))
+  P     <- list()
+  mnl_s <- list(alternatives = c(project = 1, optout = 2),
+                avail        = list(project = 1, optout = 1),
+                choiceVar    = choiceVar)
+  for (s in 1:3) {
+    V <- list()
+    V[["project"]] <- asc[[s]] * ASC_accept +
+      b_Project[[s]] * Project + b_Specie[[s]] * Specie +
+      b_Location[[s]] * Location + b_Price[[s]] * Price
+    V[["optout"]] <- 0
+    mnl_s$utilities     <- V
+    mnl_s$componentName <- paste0("Class_", s)
+    P[[paste0("Class_", s)]] <- apollo_mnl(mnl_s, functionality)
+    P[[paste0("Class_", s)]] <- apollo_panelProd(
+      P[[paste0("Class_", s)]], apollo_inputs, functionality)
+  }
+  P[["model"]] <- apollo_lc(
+    list(inClassProb = P, classProb = pi_values),
+    apollo_inputs, functionality)
+  return(apollo_prepareProb(P, apollo_inputs, functionality))
+}
+
+apollo_inputs <- apollo_validateInputs()
+model_3cl <- apollo_estimate(
+  apollo_beta, apollo_fixed,
+  apollo_probabilities, apollo_inputs,
+  estimate_settings = list(estimationRoutine = "bgw",
+    maxIterations = 2000, writeIter = FALSE, numDeriv = TRUE))
+apollo_saveOutput(model_3cl)
+apollo_sink()
+```
+
+#### 3 classes result
+```{r}
+
+res_3 <- diagnosticos_LC(model_3cl, 3, apollo_probabilities,
+                          apollo_inputs, n_indiv)
+```
+
+
+
+### Four classes model
+
+#### Apollo: beta, fixed, lcPars
+
+```{r}
+
+cat("\n", strrep("=", 60), "\n")
+cat("  ESTIMANDO C = 4 CLASSES\n")
+cat(strrep("=", 60), "\n")
+
+apollo_control <- list(
+  modelName = "LC_4cl", modelDescr = "LC 4 classes",
+  indivID = "Id", mixing = FALSE, nCores = 1,
+  outputDirectory = "output"
+)
+
+apollo_beta <- c(
+  asc_a = 1.0, asc_b = -1.0, asc_c = 0.2, asc_d = -0.2,
+  b_Project_a  = 0.10, b_Specie_a  = 0.10,
+  b_Location_a = 0.20, b_Price_log_a = -3.91,
+  b_Project_b  = 0.10, b_Specie_b  = 0.10,
+  b_Location_b = 0.20, b_Price_log_b = -3.91,
+  b_Project_c  = 0.10, b_Specie_c  = 0.10,
+  b_Location_c = 0.20, b_Price_log_c = -3.91,
+  b_Project_d  = 0.10, b_Specie_d  = 0.10,
+  b_Location_d = 0.20, b_Price_log_d = -3.91,
+  delta_a = 0.0, delta_b = 0.0,
+  delta_c = 0.0, delta_d = 0.0
+)
+apollo_fixed <- "delta_d"
+
+apollo_lcPars <- function(apollo_beta, apollo_inputs) {
+  lcpars <- list(
+    asc        = list(asc_a,        asc_b,
+                      asc_c,        asc_d),
+    b_Project  = list(b_Project_a,  b_Project_b,
+                      b_Project_c,  b_Project_d),
+    b_Specie   = list(b_Specie_a,   b_Specie_b,
+                      b_Specie_c,   b_Specie_d),
+    b_Location = list(b_Location_a, b_Location_b,
+                      b_Location_c, b_Location_d),
+    b_Price    = list(-exp(b_Price_log_a), -exp(b_Price_log_b),
+                      -exp(b_Price_log_c), -exp(b_Price_log_d))
+  )
+  V_class <- list(class_a = delta_a, class_b = delta_b,
+                  class_c = delta_c, class_d = delta_d)
+  lcpars[["pi_values"]] <- apollo_classAlloc(list(
+    classes = c(class_a = 1, class_b = 2,
+                class_c = 3, class_d = 4),
+    utilities = V_class, componentName = "classAlloc"))
+  return(lcpars)
+}
+```
+
+
+#### Apollo: probabilities and inputs
+
+```{r}
+
+apollo_probabilities <- function(apollo_beta, apollo_inputs,
+                                 functionality = "estimate") {
+  apollo_attach(apollo_beta, apollo_inputs)
+  on.exit(apollo_detach(apollo_beta, apollo_inputs))
+  P     <- list()
+  mnl_s <- list(alternatives = c(project = 1, optout = 2),
+                avail        = list(project = 1, optout = 1),
+                choiceVar    = choiceVar)
+  for (s in 1:4) {
+    V <- list()
+    V[["project"]] <- asc[[s]] * ASC_accept +
+      b_Project[[s]] * Project + b_Specie[[s]] * Specie +
+      b_Location[[s]] * Location + b_Price[[s]] * Price
+    V[["optout"]] <- 0
+    mnl_s$utilities     <- V
+    mnl_s$componentName <- paste0("Class_", s)
+    P[[paste0("Class_", s)]] <- apollo_mnl(mnl_s, functionality)
+    P[[paste0("Class_", s)]] <- apollo_panelProd(
+      P[[paste0("Class_", s)]], apollo_inputs, functionality)
+  }
+  P[["model"]] <- apollo_lc(
+    list(inClassProb = P, classProb = pi_values),
+    apollo_inputs, functionality)
+  return(apollo_prepareProb(P, apollo_inputs, functionality))
+}
+
+apollo_inputs <- apollo_validateInputs()
+model_4cl <- apollo_estimate(
+  apollo_beta, apollo_fixed,
+  apollo_probabilities, apollo_inputs,
+  estimate_settings = list(estimationRoutine = "bgw",
+    maxIterations = 2000, writeIter = FALSE, numDeriv = TRUE))
+apollo_saveOutput(model_4cl)
+apollo_sink()
+```
+
+#### 4 classes result
+```{r}
+res_4 <- diagnosticos_LC(model_4cl, 4, apollo_probabilities,
+                        apollo_inputs, n_indiv)
+```
+
+### Class selection test
+```{r}
+
+
+cat("\n===    LLout Models' names ===\n")
+cat("C=2:", names(model_2cl$LLout), "\n")
+cat("C=3:", names(model_3cl$LLout), "\n")
+cat("C=4:", names(model_4cl$LLout), "\n")
+
+get_ll_metrics <- function(model) {
+  ll  <- as.numeric(model$LLout[1])
+  k   <- length(model$estimate)
+  nms <- names(model$LLout)
+
+  cat("  LLout:", paste(nms, round(model$LLout, 2),
+                        sep = "=", collapse = " | "), "\n")
+
+  LLc <- if ("LL(c)" %in% nms) as.numeric(model$LLout["LL(c)"])
+         else if ("LLc" %in% nms) as.numeric(model$LLout["LLc"])
+         else ll
+
+  aic    <- -2 * ll + 2 * k
+  bic    <- -2 * ll + k * log(n_cs)
+  rho2_0 <- 1 - ll / LL0_correcto
+  rho2_c <- 1 - ll / LLc
+
+  cat(sprintf("  LL=%.2f | LL0=%.2f | LLc=%.2f | rho2_0=%.4f | rho2_c=%.4f\n",
+              ll, LL0_correcto, LLc, rho2_0, rho2_c))
+
+  list(ll = ll, k = k, aic = aic, bic = bic,
+       rho2_0 = rho2_0, rho2_c = rho2_c)
+}
+
+cat("\n=== Criteria verification ===\n")
+cat("C=2:\n"); m2 <- get_ll_metrics(model_2cl)
+cat("C=3:\n"); m3 <- get_ll_metrics(model_3cl)
+cat("C=4:\n"); m4 <- get_ll_metrics(model_4cl)
+
+```
+
+
+#### Convergence, test and parameters
+
+```{r}
+
+# ================================================================= #
+#### TABLA FINAL                                                 ####
+# ================================================================= #
+
+results   <- list(res_2, res_3, res_4)
+convergence <- c(TRUE, FALSE, FALSE)  # C=3 singular; C=4 sin Hessiana
+bic_valid_min <- min(c(m2$bic, m3$bic, m4$bic)[convergence])
+fit_table <- tibble(
+  Classes   = c(2,    3,    4),
+  LL        = c(m2$ll,    m3$ll,    m4$ll),
+  npar      = c(m2$k,     m3$k,     m4$k),
+  AIC       = c(m2$aic,   m3$aic,   m4$aic),
+  BIC       = c(m2$bic,   m3$bic,   m4$bic),
+  Rho2_0    = c(m2$rho2_0, m3$rho2_0, m4$rho2_0),
+  Rho2_c    = c(m2$rho2_c, m3$rho2_c, m4$rho2_c),
+  Entropy   = c(res_2$entropy, res_3$entropy, res_4$entropy),
+  Converged = convergence
+) %>%
+  mutate(
+    delta_AIC  = ifelse(Converged, round(AIC - min(AIC[Converged]), 2), NA),
+    delta_BIC  = ifelse(Converged, round(BIC - bic_valid_min, 2), NA),
+    LR_vs_prev = c(NA, round(2 * diff(LL), 2)),
+    df_prev    = c(NA, diff(npar)),
+    p_LR       = c(NA, mapply(function(lr, df) {
+      if (is.na(lr) || is.na(df)) return(NA)
+      round(pchisq(lr, df = df, lower.tail = FALSE), 4)
+    }, LR_vs_prev[-1], df_prev[-1]))
+  )
+
+cat("\n", strrep("=", 70), "\n")
+cat("  Final table\n")
+cat(strrep("=", 70), "\n\n")
+print(as.data.frame(fit_table), digits = 4)
+
+cat("\n", strrep("=", 70), "\n")
+cat("  Classification diagnostics\n")
+cat(strrep("=", 70), "\n")
+
+for (res in results) {
+  C <- res$C
+  cat(sprintf("\nModel with C = %d classes\n", C))
+  
+  for (j in seq_len(C)) {
+    cat(sprintf(
+      "  Clase %s: pi=%.3f | APCP_global=%.3f | APCP_modal=%.3f | OCC=%.2f\n",
+      LETTERS[j],
+      res$class_sizes[j],
+      res$avg_post_prob[j],
+      res$apcp_modal[j],
+      res$occ[j]
+    ))
+  }
+  
+  cat(sprintf("  Relative entropy: %.4f\n", res$entropy))
+}
+
+# ================================================================= #
+#### LR TEST 1: Do the membership covariables add value?         ####
+# Comparing C=2 sin covar (model_2cl, k=12) vs
+#         C=2 con covar (model_2cl_final, k=15)
+# ================================================================= #
+
+cat("\n", strrep("=", 70), "\n")
+cat("  LR TESTS\n")
+cat(strrep("=", 70), "\n")
+
+# --- LR Test 1: membership covariates ---
+ll_r1  <- as.numeric(model_2cl$LLout[1])        # restringded: without covar
+ll_ur1 <- as.numeric(model_2cl_final$LLout[1])  # not restringed: with covar
+k_r1   <- length(model_2cl$estimate)
+k_ur1  <- length(model_2cl_final$estimate)
+df1    <- k_ur1 - k_r1
+LR1    <- -2 * (ll_r1 - ll_ur1)
+pval1  <- pchisq(LR1, df = df1, lower.tail = FALSE)
+
+cat("\nLR Test 1: Membership covariates (H0: all gamma = 0)\n")
+cat(sprintf("  LL restringed    (sin covar, k=%d): %10.4f\n", k_r1,  ll_r1))
+cat(sprintf("  LL not restringed (con covar, k=%d): %10.4f\n", k_ur1, ll_ur1))
+cat(sprintf("  LR statistic: %.4f\n", LR1))
+cat(sprintf("  df          : %d\n",   df1))
+cat(sprintf("  p-value     : %.2e\n", pval1))
+
+# --- LR Test 2: C=2 vs C=3 (auxiliary; p-value) ---
+ll_r2  <- as.numeric(model_2cl_final$LLout[1])
+ll_ur2 <- as.numeric(model_3cl$LLout[1])
+k_r2   <- length(model_2cl_final$estimate)
+k_ur2  <- length(model_3cl$estimate)
+df2    <- k_ur2 - k_r2
+LR2    <- -2 * (ll_r2 - ll_ur2)
+pval2  <- pchisq(LR2, df = df2, lower.tail = FALSE)
+
+cat("\nLR Test 2: Number of classes C=2 vs C=3\n")
+cat("  [NOTE: mild p-value — parameter in the limit under H0]\n")
+cat(sprintf("  LL C=2 (con covar, k=%d): %10.4f\n", k_r2,  ll_r2))
+cat(sprintf("  LL C=3 (con covar, k=%d): %10.4f\n", k_ur2, ll_ur2))
+cat(sprintf("  LR statistic: %.4f\n", LR2))
+cat(sprintf("  df          : %d\n",   df2))
+cat(sprintf("  p-valor chi2: %.2e  (conservador)\n", pval2))
+cat(sprintf("  Convergence C=3: SINGULAR — SE not available \n"))
+cat(sprintf("  Main criteria: BIC selects C=2 .\n"))
+
+cat("\n WARNING:\n")
+cat("  C=3: singular convergence — no valid covariance matrix.\n")
+cat("  C=4: BHHH singular —  no standard error.\n")
+cat("  Solo C=2 negative hessian and valid SE.\n")
+cat("  Selected model: C=2.\n")
+
+```
+
+### Class selection graphics
+
+```{r}
+# ================================================================= #
+#### GRÁFICOS                                                    ####
+# ================================================================= #
+
+theme_ac <- function() {
+  theme_classic(base_size = 11, base_family = "serif") +
+    theme(
+      plot.title    = element_text(face = "bold", size = 12),
+      plot.subtitle = element_text(size = 10, color = "grey40"),
+      plot.caption  = element_text(size = 8,  color = "grey50"),
+      legend.position    = "bottom",
+      legend.title       = element_blank(),
+      panel.grid.major.y = element_line(color = "grey92",
+                                        linewidth = 0.4)
+    )
+}
+
+# ---- Plot A: convergence criteria  ------------ #
+
+p_fit <- ggplot(fit_table, aes(x = Classes)) +
+  # Problematic convergence shadowed
+  annotate("rect", xmin = 2.5, xmax = 4.5,
+           ymin = -Inf, ymax = Inf,
+           fill = "grey95", alpha = 0.7) +
+  annotate("text", x = 3.5,
+           y = max(fit_table$BIC) * 1.0005,
+           label = "Singular convergence\n(no valid SE)",
+           size = 2.8, hjust = 0.5, color = "grey55",
+           family = "serif", fontface = "italic") +
+  geom_line(aes(y = BIC, color = "BIC"), linewidth = 1.0) +
+  geom_line(aes(y = AIC, color = "AIC"), linewidth = 1.0,
+            linetype = "dashed") +
+  # Puntos convergidos
+  geom_point(data = filter(fit_table,  Converged),
+             aes(y = BIC, color = "BIC"), size = 4) +
+  geom_point(data = filter(fit_table,  Converged),
+             aes(y = AIC, color = "AIC"), size = 4, shape = 17) +
+  # Puntos NO convergidos (X)
+  geom_point(data = filter(fit_table, !Converged),
+             aes(y = BIC, color = "BIC"),
+             size = 4, shape = 4, stroke = 1.8) +
+  geom_point(data = filter(fit_table, !Converged),
+             aes(y = AIC, color = "AIC"),
+             size = 4, shape = 4, stroke = 1.8) +
+  # vERTICAL LINE: SELECTED MODEL
+  geom_vline(xintercept = 2, linetype = "dotted",
+             color = "#2C5F8A", linewidth = 0.8) +
+  annotate("text", x = 2.08,
+           y = min(fit_table$AIC) +
+             0.55 * (max(fit_table$BIC) - min(fit_table$AIC)),
+           label = "Selected\n(C = 2)",
+           size = 3, hjust = 0, color = "#2C5F8A",
+           family = "serif", fontface = "bold") +
+  scale_color_manual(values = c("BIC" = "#2C5F8A",
+                                "AIC" = "#C0392B")) +
+  scale_x_continuous(breaks = 2:4) +
+  labs(
+    title    = "A. Information criteria by number of classes",
+    subtitle = paste0(
+      "Filled/triangle = favorable convergence;  ",
+      "\u2717 = singular convergence (no SE available)"),
+    x        = "Number of latent classes (C)",
+    y        = "Value",
+    caption  = paste0(
+      "Selected model: C = 2 \u2014 only specification with ",
+      "negative definite Hessian and valid covariance matrix.")
+  ) +
+  theme_ac()
+
+print(p_fit)
+ggsave("LC_sel_A_criteria.pdf",  p_fit, width = 14, height = 9,
+       units = "cm", device = cairo_pdf)
+ggsave("LC_sel_A_criteria.tiff", p_fit, width = 14, height = 9,
+       units = "cm", dpi = 600, compression = "lzw")
+cat("Plot A saved\n")
+
+# ---- Plot B: entropy ------------------------------------------- #
+
+p_entropy <- ggplot(fit_table, aes(x = Classes, y = Entropy)) +
+  geom_line(color = "#2C5F8A", linewidth = 1.0) +
+  geom_point(data = filter(fit_table,  Converged),
+             color = "#2C5F8A", size = 3.5) +
+  geom_point(data = filter(fit_table, !Converged),
+             color = "#2C5F8A", size = 3.5,
+             shape = 4, stroke = 1.5) +
+  geom_hline(yintercept = 0.6, linetype = "dashed",
+             color = "grey50", linewidth = 0.6) +
+  annotate("text", x = max(fit_table$Classes), y = 0.615,
+           label = "Threshold = 0.60", size = 3,
+           hjust = 1, color = "grey50", family = "serif") +
+  scale_x_continuous(breaks = 2:4) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+  labs(
+    title    = "B. Relative entropy by number of classes",
+    subtitle = paste0(
+      "All specifications exceed the 0.60 threshold;  ",
+      "\u2717 = singular convergence"),
+    x        = "Number of latent classes (C)",
+    y        = "Relative entropy",
+    caption  = "Dashed line: acceptable threshold (\u2265 0.60)."
+  ) +
+  theme_ac()
+
+print(p_entropy)
+ggsave("LC_sel_B_entropy.pdf",  p_entropy, width = 12, height = 9,
+       units = "cm", device = cairo_pdf)
+ggsave("LC_sel_B_entropy.tiff", p_entropy, width = 12, height = 9,
+       units = "cm", dpi = 600, compression = "lzw")
+cat("Plot B guardado.\n")
+
+# ---- Plot C:class sizes  ----------------------------------- #
+
+sizes_long <- bind_rows(lapply(results, function(res) {
+  tibble(
+    Classes = res$C,
+    Class   = paste0("Class ", LETTERS[seq_len(res$C)]),
+    Size    = res$class_sizes
+  )
+}))
+
+p_sizes <- ggplot(sizes_long,
+                  aes(x = factor(Classes), y = Size, fill = Class)) +
+  geom_col(position = "stack", width = 0.5, alpha = 0.85) +
+  geom_hline(yintercept = 0.05, linetype = "dashed",
+             color = "grey40", linewidth = 0.5) +
+  annotate("text", x = 0.6, y = 0.065, label = "5% min.",
+           size = 3, hjust = 0, color = "grey40",
+           family = "serif") +
+  scale_y_continuous(labels = percent_format(),
+                     limits = c(0, 1),
+                     breaks = seq(0, 1, 0.2)) +
+  scale_fill_brewer(palette = "Blues", direction = -1) +
+  labs(
+    title    = "Class size distribution",
+    subtitle = "Unconditional class membership probabilities",
+    x        = "Number of latent classes (C)",
+    y        = "Class share",
+    fill     = NULL,
+    caption  = "Dashed line: 5% minimum class size guideline."
+  ) +
+  theme_ac()
+
+print(p_sizes)
+ggsave("LC_sel_C_sizes.pdf",  p_sizes, width = 12, height = 9,
+       units = "cm", device = cairo_pdf)
+ggsave("LC_sel_C_sizes.tiff", p_sizes, width = 12, height = 9,
+       units = "cm", dpi = 600, compression = "lzw")
+cat("Plot C saved\n")
+
+# ---- Plot D:posterior probability and class sizes ----- #
+
+post_long <- bind_rows(lapply(results, function(res) {
+  tibble(
+    Classes   = res$C,
+    Class     = paste0("Class ", LETTERS[seq_len(res$C)]),
+    PostProb  = res$avg_post_prob,
+    ClassSize = res$class_sizes
+  )
+}))
+
+p_post <- ggplot(post_long,
+                 aes(x = factor(Classes), y = PostProb,
+                     fill = Class)) +
+  geom_col(position = position_dodge(width = 0.65),
+           width = 0.5, alpha = 0.85) +
+  # Hyphen in position of inconditional class size
+  # If bar  ≈ hyohen → posteriors ≈ priors → low discrimination
+  geom_point(aes(y = ClassSize, group = Class),
+             position = position_dodge(width = 0.65),
+             shape = 95, size = 7, color = "grey25") +
+  geom_hline(yintercept = 0.7, linetype = "dashed",
+             color = "grey40", linewidth = 0.5) +
+  annotate("text", x = 0.6, y = 0.715, label = "0.70 min.",
+           size = 3, hjust = 0, color = "grey40",
+           family = "serif") +
+  scale_y_continuous(limits = c(0, 1),
+                     breaks = seq(0, 1, 0.2)) +
+  scale_fill_brewer(palette = "Blues", direction = -1) +
+  labs(
+    title    = "D. Average posterior class probabilities",
+    subtitle = paste0(
+      "Bars = avg. posterior probability;  ",
+      "\u2014 = unconditional class size"),
+    x        = "Number of latent classes (C)",
+    y        = "Average posterior probability",
+    fill     = NULL,
+    caption  = paste0(
+      "When bars \u2248 dashes, posteriors \u2248 priors: ",
+      "limited individual-level discrimination.  ",
+      "Dashed line: minimum threshold (\u2265 0.70).")
+  ) +
+  theme_ac()
+
+print(p_post)
+ggsave("LC_sel_D_postprob.pdf",  p_post, width = 12, height = 9,
+       units = "cm", device = cairo_pdf)
+ggsave("LC_sel_D_postprob.tiff", p_post, width = 12, height = 9,
+       units = "cm", dpi = 600, compression = "lzw")
+cat("Plot D guardado.\n")
+
+# ================================================================= #
+#### TABLE LATEX FINAL                                           ####
+# ================================================================= #
+
+cat("\n\n% ===== TABLe LATEX FINAL =====\n")
+cat("\\begin{table}[h!]\n\\centering\\small\n")
+cat("\\caption{Latent class model selection: fit statistics and ",
+    "classification diagnostics}\n")
+cat("\\label{tab:LC_selection}\n")
+cat("\\begin{threeparttable}\n")
+cat("\\begin{tabular}{crrrrrrrc}\n\\toprule\n")
+cat("$C$ & LL & $k$ & AIC & BIC & $\\Delta$BIC & ",
+    "$\\rho^2_0$ & $\\rho^2_c$ & Convergence \\\\\n\\midrule\n")
+
+for (i in seq_len(nrow(fit_table))) {
+  r         <- fit_table[i, ]
+  conv_rows <- fit_table[fit_table$Converged, ]
+  is_best   <- r$Converged && r$BIC == min(conv_rows$BIC)
+  marker    <- if (is_best) "$^{\\dagger}$" else ""
+  conv_str  <- if (r$Converged) "Favorable"
+               else "Singular$^{a}$"
+  cat(sprintf(
+    "%d & %.2f & %d & %.2f & %.2f%s & %.2f & %.4f & %.4f & %s \\\\\n",
+    r$Classes, r$LL, r$npar,
+    r$AIC, r$BIC, marker,
+    r$delta_BIC, r$Rho2_0, r$Rho2_c,
+    conv_str))
+}
+
+cat("\\bottomrule\n\\end{tabular}\n")
+cat("\\begin{tablenotes}[flushleft]\\footnotesize\n")
+cat("\\item \\textit{Notes:} $C$ = number of latent classes; ")
+cat("$k$ = estimated parameters; LL = log-likelihood at convergence; ")
+cat("$\\Delta$BIC = difference relative to minimum BIC; ")
+cat("$\\rho^2_0$ computed against the equal-probability null model ")
+cat("($\\text{LL}_0 = -N_{obs} \\log 2$); ")
+cat("Entropy = relative entropy (higher = better class separation). ")
+cat("$^{\\dagger}$ Selected specification: lowest BIC among ")
+cat("specifications with favorable convergence and valid covariance matrix. ")
+cat("$^{a}$ Singular or degenerate convergence: parameter estimates ")
+cat("are available but standard errors cannot be computed.\n")
+cat("\\end{tablenotes}\n")
+cat("\\end{threeparttable}\n\\end{table}\n")
+cat(sprintf(
+  "\n%% LR Test (membership covariates): chi2(%d) = %.4f, p = %.2e\n",
+  df1, LR1, pval1))
+cat(sprintf(
+  "%% LR Test (C=2 vs C=3, auxiliar):  chi2(%d) = %.4f, p = %.2e [conservador; C=3 singular]\n",
+  df2, LR2, pval2))
+
+cat("\nProcess finished.\n")
+```
+
+
+
+
+### Final 2 classes model
+
+
+```{r}
+rm(list = ls())
+data_path <- file.path("data", "Analisis.xlsx")
+
+
+apollo_initialise()
+
+apollo_control = list(
+  modelName       = "LC_2cl_TPB_Surv_final",
+  modelDescr      = "LC 2 classes with TPB + Registry, restringed price",
+  indivID         = "Id",
+  mixing          = FALSE,
+  nCores          = 4,
+  outputDirectory = "output"
+)
+
+database <- as.data.frame(
+  read_excel(data_path,
+             sheet = "Todo_II") %>%
+    mutate(
+      Project    = ifelse(Optout == 1 & Project  == -4, 0, Project),
+      Specie     = ifelse(Optout == 1 & Specie   == -4, 0, Specie),
+      Location   = ifelse(Optout == 1 & Location == -4, 0, Location),
+      Price      = ifelse(Optout == 1 & Price    == -4, 0, Price),
+      ASC_accept = as.numeric(ifelse(Optout == 1, 0, 1)),
+      alt_id     = ifelse(Optout == 0, 1, 2),
+      chid       = paste(Id, ParentQuestionId, QuestionId, sep = "_")
+    ) %>%
+    group_by(chid) %>%
+    mutate(choiceVar = alt_id[which(Choice == 1)][1]) %>%
+    ungroup()
+)
+
+# ----------------------------------------------------------------- #
+# Price - Guaranteed negative sign
+# ----------------------------------------------------------------- #
+apollo_beta = c(
+  asc_a          =  1.0,
+  asc_b          = -1.0,
+
+  b_Project_a    =  0.10,
+  b_Specie_a     =  0.20,
+  b_Location_a   =  0.30,
+  b_Price_log_a  = -3.91,   # -exp(-3.91) ≈ -0.020
+
+  b_Project_b    = -0.05,
+  b_Specie_b     =  0.10,
+  b_Location_b   =  0.10,
+  b_Price_log_b  = -3.91,
+
+  delta_a        =  0.0,
+  delta_b        =  0.0,    # referenec, fixed
+
+  gamma_Att_a    =  0.0,
+  gamma_PBC_a    =  0.0,
+  gamma_SN_a     =  0.0,
+  gamma_Surv_a   =  0.0
+  #gamma_Pyme_a   =  0.0
+)
+
+# Class B = reference; only gamma for Class A
+apollo_fixed = c("delta_b")
+
+# ----------------------------------------------------------------- #
+apollo_lcPars = function(apollo_beta, apollo_inputs) {
+  lcpars = list()
+
+  lcpars[["asc"]]        = list(asc_a,        asc_b)
+  lcpars[["b_Project"]]  = list(b_Project_a,  b_Project_b)
+  lcpars[["b_Specie"]]   = list(b_Specie_a,   b_Specie_b)
+  lcpars[["b_Location"]] = list(b_Location_a, b_Location_b)
+  lcpars[["b_Price"]]    = list(-exp(b_Price_log_a),
+                                 -exp(b_Price_log_b))
+
+  V_class = list()
+  V_class[["class_a"]] = delta_a +
+    gamma_Att_a  * Attitudes       +
+    gamma_PBC_a  * PerceivedBehavC +
+    gamma_SN_a   * SubjectiveNorms +
+    gamma_Surv_a * Survey          #+
+    #gamma_SME_a * SME
+
+  V_class[["class_b"]] = delta_b   # = 0, reference
+
+  lcpars[["pi_values"]] = apollo_classAlloc(list(
+    classes       = c(class_a = 1, class_b = 2),
+    utilities     = V_class,
+    componentName = "classAlloc"
+  ))
+
+  return(lcpars)
+}
+
+# ----------------------------------------------------------------- #
+apollo_inputs = apollo_validateInputs()
+
+apollo_probabilities = function(apollo_beta, apollo_inputs,
+                                functionality = "estimate") {
+  apollo_attach(apollo_beta, apollo_inputs)
+  on.exit(apollo_detach(apollo_beta, apollo_inputs))
+
+  P = list()
+  mnl_settings = list(
+    alternatives = c(project = 1, optout = 2),
+    avail        = list(project = 1, optout = 1),
+    choiceVar    = choiceVar
+  )
+
+  for (s in 1:2) {
+    V = list()
+    V[["project"]] = asc[[s]]        * ASC_accept +
+                     b_Project[[s]]  * Project    +
+                     b_Specie[[s]]   * Specie     +
+                     b_Location[[s]] * Location   +
+                     b_Price[[s]]    * Price
+    V[["optout"]]  = 0
+
+    mnl_settings$utilities     = V
+    mnl_settings$componentName = paste0("Class_", s)
+
+    P[[paste0("Class_", s)]] = apollo_mnl(mnl_settings, functionality)
+    P[[paste0("Class_", s)]] = apollo_panelProd(
+      P[[paste0("Class_", s)]], apollo_inputs, functionality)
+  }
+
+  lc_settings  = list(inClassProb = P, classProb = pi_values)
+  P[["model"]] = apollo_lc(lc_settings, apollo_inputs, functionality)
+  P = apollo_prepareProb(P, apollo_inputs, functionality)
+  return(P)
+}
+
+# ----------------------------------------------------------------- #
+model_2cl_final = apollo_estimate(
+  apollo_beta, apollo_fixed,
+  apollo_probabilities, apollo_inputs,
+  estimate_settings = list(
+    estimationRoutine = "bgw",
+    maxIterations     = 2000,
+    writeIter         = FALSE,
+    numDeriv          = TRUE    
+  )
+)
+
+apollo_modelOutput(model_2cl_final,
+                   modelOutput_settings = list(printPVal = TRUE))
+apollo_saveOutput(model_2cl_final)
+apollo_sink()
+
+# ----------------------------------------------------------------- #
+# DIAGNOSTICS
+# ----------------------------------------------------------------- #
+cat("\nNAs en robvarcov:", sum(is.na(model_2cl_final$robvarcov)), "\n")
+
+unconditionals = apollo_lcUnconditionals(model_2cl_final,
+                                          apollo_probabilities,
+                                          apollo_inputs)
+n_cl        = length(unconditionals[["pi_values"]])
+class_sizes = colMeans(matrix(unlist(unconditionals[["pi_values"]]),
+                               ncol = n_cl, byrow = FALSE))
+cat("\n=== Classes sizes ===\n")
+print(round(class_sizes, 4))
+
+conditionals = apollo_lcConditionals(model_2cl_final,
+                                      apollo_probabilities,
+                                      apollo_inputs)
+class_modal = apply(conditionals[, 2:3], 1, which.max)
+cat("\n=== modal asignation ===\n")
+print(table(class_modal))
+
+for (var in c("Segment","Survey","SME","SustDepart",
+              "Attitudes","PerceivedBehavC","SubjectiveNorms","Risk")) {
+  if (var %in% names(database)) {
+    vn = apollo_firstRow(database[[var]], apollo_inputs)
+    pv = colSums(vn * conditionals[, 2:3]) / colSums(conditionals[, 2:3])
+    cat(sprintf("\n%-20s | A: %6.3f | B: %6.3f\n", var, pv[1], pv[2]))
+  }
+}
+
+# ----------------------------------------------------------------- #
+# WTP
+# ----------------------------------------------------------------- #
+b = model_2cl_final$estimate
+
+for (cl in c("a", "b")) {
+  price_real = -exp(b[paste0("b_Price_log_", cl)])
+  cat(sprintf("\n=== WTP Clase %s (precio = %.5f) ===\n",
+              toupper(cl), price_real))
+  cat("  ASC:     ", round(-b[paste0("asc_",       cl)] / price_real, 2), "\n")
+  cat("  Project: ", round(-b[paste0("b_Project_", cl)] / price_real, 2), "\n")
+  cat("  Specie:  ", round(-b[paste0("b_Specie_",  cl)] / price_real, 2), "\n")
+  cat("  Location:", round(-b[paste0("b_Location_",cl)] / price_real, 2), "\n")
+}
+
+# ----------------------------------------------------------------- #
+# KRINSKY-ROBB
+# ----------------------------------------------------------------- #
+if (sum(is.na(model_2cl_final$robvarcov)) == 0) {
+
+  set.seed(2025)
+  S      = 10000
+  V_vcov = model_2cl_final$robvarcov
+  b_kr   = model_2cl_final$estimate[rownames(V_vcov)]
+  draws  = MASS::mvrnorm(n = S, mu = b_kr, Sigma = V_vcov)
+
+  price_a = -exp(draws[, "b_Price_log_a"])
+  price_b = -exp(draws[, "b_Price_log_b"])
+
+  wtp_list = list(
+    ASC_a      = -draws[, "asc_a"]        / price_a,
+    Project_a  = -draws[, "b_Project_a"]  / price_a,
+    Specie_a   = -draws[, "b_Specie_a"]   / price_a,
+    Location_a = -draws[, "b_Location_a"] / price_a,
+    ASC_b      = -draws[, "asc_b"]        / price_b,
+    Project_b  = -draws[, "b_Project_b"]  / price_b,
+    Specie_b   = -draws[, "b_Specie_b"]   / price_b,
+    Location_b = -draws[, "b_Location_b"] / price_b
+  )
+
+  cat("\n=== Krinsky-Robb WTP [mean, median, q025, q975] ===\n")
+  kr_results = lapply(wtp_list, function(x) {
+    c(mean   = round(mean(x,   na.rm = TRUE), 2),
+      median = round(median(x, na.rm = TRUE), 2),
+      q025   = round(quantile(x, 0.025, na.rm = TRUE), 2),
+      q975   = round(quantile(x, 0.975, na.rm = TRUE), 2))
+  })
+  print(do.call(rbind, kr_results))
+
+} else {
+  cat("\nATENCIÓN: robvarcov has NAs after numDeriv=TRUE.\n")
+  cat(" Model may have structural identification problems.\n")
+}
+
+# Information criteria
+ll   = model_2cl_Pyme$LLout[1]
+  k    = length(model_2cl_Pyme$estimate)
+n_cs = length(unique(database$chid))
+cat("\n=== Criterios de información ===\n")
+cat("LL  :", round(ll,  2), "\n")
+cat("AIC :", round(-2*ll + 2*k,         2), "\n")
+cat("BIC :", round(-2*ll + k*log(n_cs), 2), "\n")
+cat("npar:", k, "\n")
+
+# Information criteria
+ll   = model_2cl_final$LLout[1]
+  k    = length(model_2cl_final$estimate)
+n_cs = length(unique(database$chid))
+cat("\n=== Criterios de información ===\n")
+cat("LL  :", round(ll,  2), "\n")
+cat("AIC :", round(-2*ll + 2*k,         2), "\n")
+cat("BIC :", round(-2*ll + k*log(n_cs), 2), "\n")
+cat("npar:", k, "\n")
+
+apollo_sink()
+```
+
+
+
+### Data visualisation
+
+```{r}
+col_A   <- "#79CDCD"
+col_B   <- "#6E8B3D"
+col_mid <- "#7F8C8D"
+
+theme_academic <- function() {
+  theme_classic(base_size = 11, base_family = "serif") +
+    theme(
+      plot.title    = element_text(face = "bold", size = 12, hjust = 0),
+      plot.subtitle = element_text(size = 10, color = "grey40", hjust = 0),
+      axis.title    = element_text(size = 10),
+      axis.text     = element_text(size = 9),
+      legend.position  = "bottom",
+      legend.title     = element_blank(),
+      legend.text      = element_text(size = 9),
+      panel.grid.major.y = element_line(color = "grey92", linewidth = 0.4),
+      strip.text       = element_text(face = "bold", size = 10),
+      plot.caption     = element_text(size = 8, color = "grey50", hjust = 0)
+    )
+}
+
+# ----------------------------------------------------------------- #
+# DATA
+# ----------------------------------------------------------------- #
+
+wtp_data <- tibble(
+  class     = rep(c("Class A\n(ESG-oriented)",
+                    "Class B\n(Capacity constrained)"), each = 3),
+  attribute = rep(c("Project type", "Tree species", "Location"), 2),
+  mean      = c(3.9,   5.9,  15.1,   -4.6,  5.9,   2.4),
+  q025      = c(-0.5,  2.0,   9.9,  -13.7, -1.8,  -5.9),
+  q975      = c( 8.2, 10.3,  20.8,    1.6, 20.6,  15.6)
+) %>%
+  mutate(
+    attribute = factor(attribute,
+                       levels = c("Project type", "Tree species", "Location")),
+    sig = case_when(
+      q025 > 0 | q975 < 0 ~ TRUE,
+      TRUE                 ~ FALSE
+    )
+  )
+
+membership_data <- tibble(
+  parameter = c("Registry\nmembership", "PBC", "Attitudes",
+                "Subjective\nNorms", "Intercept"),
+  estimate  = c(1.946,  0.341,  0.216,  0.207, -1.298),
+  se_rob    = c(0.253,  0.121,  0.120,  0.127,  0.221),
+  sig       = c("***",  "***",  "**",   "*",    "***")
+) %>%
+  mutate(
+    lo = estimate - 1.96 * se_rob,
+    hi = estimate + 1.96 * se_rob,
+    parameter = factor(parameter,
+                       levels = rev(c("Registry\nmembership", "PBC",
+                                      "Attitudes", "Subjective\nNorms",
+                                      "Intercept")))
+  )
+
+posterior_data <- tibble(
+  variable = rep(c("Awareness", "Registry\nmembership",
+                   "Sustainability\ndept.", "SME",
+                   "Service sector",
+                   "Attitudes\n(mean)", "PBC\n(mean)",
+                   "Subj. Norms\n(mean)"), 2),
+  class    = rep(c("Class A\n(ESG-oriented)",
+                   "Class B\n(Price-oriented)"), each = 8),
+  value    = c(
+    # Class A
+    0.706, 0.661, 0.462, 0.588, NA,
+    0.181, 0.219, 0.189,
+
+    # Class B
+    0.870, 0.240, 0.209, 0.802, NA,
+    -0.121, -0.146, -0.126
+  ),
+  type     = rep(c("binary", "binary", "binary", "binary", "binary",
+                   "continuous", "continuous", "continuous"), 2)
+)
+
+size_data <- tibble(
+  class   = c("Class A\n(ESG-oriented)", "Class B\n(Price-oriented)"),
+  share   = c(0.3997, 0.6003),
+  n_modal = c(203, 319),
+  label   = c("40.0%\n(N = 203)", "60.0%\n(N = 319)")
+) %>%
+  mutate(
+    ymax      = cumsum(share),
+    ymin      = lag(ymax, default = 0),
+    label_pos = (ymax + ymin) / 2
+  )
+
+# ----------------------------------------------------------------- #
+# PLOT A — WTP by class at IC95%
+# ----------------------------------------------------------------- #
+
+p1 <- ggplot(wtp_data,
+             aes(x = attribute, y = mean,
+                 color = class, shape = sig)) +
+  geom_hline(yintercept = 0, linetype = "dashed",
+             color = "grey60", linewidth = 0.5) +
+  geom_errorbar(aes(ymin = q025, ymax = q975),
+                width = 0.15, linewidth = 0.7,
+                position = position_dodge(width = 0.5)) +
+  geom_point(size = 3.5, fill = "white", stroke = 1.2,
+             position = position_dodge(width = 0.5)) +
+  scale_color_manual(values = c(col_A, col_B)) +
+  scale_shape_manual(values = c(`FALSE` = 21, `TRUE` = 19),
+                     guide  = "none") +
+  scale_y_continuous(labels = label_dollar(prefix = "€", suffix = ""),
+                     breaks = seq(-20, 25, by = 5)) +
+  labs(
+    title    = "A. Willingness to Pay by preference class",
+    subtitle = "Mean WTP with 95% Krinsky–Robb confidence intervals (€ per tCO₂)",
+    x        = NULL,
+    y        = "WTP (€ per tCO₂)",
+    caption  = "Filled points indicate statistically significant WTP (CI excludes zero)."
+  ) +
+  theme_academic()
+
+print(p1)
+
+ggsave("LC_plot_A_WTP.pdf",  plot = p1,
+       width = 14, height = 9, units = "cm", device = cairo_pdf)
+ggsave("LC_plot_A_WTP.tiff", plot = p1,
+       width = 14, height = 9, units = "cm", dpi = 600,
+       compression = "lzw")
+
+cat("Plot A saved\n")
+
+# ----------------------------------------------------------------- #
+# PLOT B — Concomitant model forest plot
+# ----------------------------------------------------------------- #
+
+p2 <- ggplot(membership_data,
+             aes(x = estimate, y = parameter)) +
+  geom_vline(xintercept = 0, linetype = "dashed",
+             color = "grey60", linewidth = 0.5) +
+  geom_errorbarh(aes(xmin = lo, xmax = hi),
+                 height = 0.25, linewidth = 0.7,
+                 color = col_A) +
+  geom_point(size = 3.5, color = col_A) +
+  geom_text(aes(x = hi + 0.12, label = sig),
+            size = 3.5, hjust = 0, color = "grey30") +
+  scale_x_continuous(limits = c(-2.2, 3.0),
+                     breaks = seq(-2, 3, by = 1)) +
+  labs(
+    title    = "A. Class-membership model",
+    subtitle = "Log-odds of Class A (ESG-oriented) vs. Class B, with 95% CI",
+    x        = "Coefficient estimate",
+    y        = NULL,
+    caption  = "* p < 0.10, ** p < 0.05, *** p < 0.01 (robust standard errors)."
+  ) +
+  theme_academic()
+
+print(p2)
+
+ggsave("LC_plot_A_membership.pdf",  plot = p2,
+       width = 12, height = 9, units = "cm", device = cairo_pdf)
+ggsave("LC_plot_B_membership.tiff", plot = p2,
+       width = 12, height = 9, units = "cm", dpi = 600,
+       compression = "lzw")
+
+cat("Plot B saved\n")
+
+# ----------------------------------------------------------------- #
+# PLOT C — posterior profile (binary variables + TPB)
+# ----------------------------------------------------------------- #
+
+
+
+post_binary <- posterior_data %>%
+  filter(type == "binary", !is.na(value)) %>%
+  mutate(variable = factor(variable,
+                           levels = c("Awareness",
+                                      "Registry\nmembership",
+                                      "Sustainability\ndept.",
+                                      "SME",
+                                      "Service sector")))
+post_cont <- posterior_data %>%
+  filter(type == "continuous") %>%
+  mutate(variable = factor(variable,
+                           levels = c("Attitudes\n(mean)",
+                                      "PBC\n(mean)",
+                                      "Subj. Norms\n(mean)")))
+
+p3a <- ggplot(post_binary,
+              aes(x = variable, y = value, fill = class)) +
+  geom_col(position = position_dodge(width = 0.6),
+           width = 0.5, alpha = 0.85) +
+  scale_fill_manual(values = c(col_A, col_B)) +
+  scale_y_continuous(labels = percent_format(),
+                     limits = c(0, 1),
+                     breaks = seq(0, 1, by = 0.2)) +
+  labs(title    = " ",
+       subtitle = "Firm characteristics (share per class)",
+       x = NULL, y = "Share") +
+  theme_academic() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 25, hjust = 1)
+  )
+
+p3b <- ggplot(post_cont,
+              aes(x = variable, y = value, fill = class)) +
+  geom_col(position = position_dodge(width = 0.6),
+           width = 0.5, alpha = 0.85) +
+  geom_hline(yintercept = 0, linewidth = 0.4, color = "grey40") +
+  scale_fill_manual(values = c(col_A, col_B)) +
+  scale_y_continuous(limits = c(-0.25, 0.45),
+                     breaks = seq(-0.2, 0.4, by = 0.1)) +
+  labs(subtitle = "TPB construct means (standardised scores)",
+       x = NULL, y = "Mean score (z)") +
+  theme_academic() +
+  theme(legend.position  = "none",
+        plot.subtitle    = element_text(size = 10, color = "grey40"))
+
+p3 <- p3a / p3b +
+  plot_layout(heights = c(1, 0.8), guides = "collect") &
+  theme(legend.position = "bottom")
+
+print(p3)
+
+ggsave("LC_plot_C_profile.pdf",  plot = p3,
+       width = 16, height = 14, units = "cm", device = cairo_pdf)
+
+ggsave("LC_plot_C_profile.tiff", plot = p3,
+       width = 16, height = 14, units = "cm", dpi = 600,
+       compression = "lzw")
+
+cat("Plot C guardado.\n")
+
+# ----------------------------------------------------------------- #
+# PLOT D — class size
+# ----------------------------------------------------------------- #
+
+p4 <- ggplot(size_data,
+             aes(ymax = ymax, ymin = ymin,
+                 xmax = 4, xmin = 2.5, fill = class)) +
+  geom_rect(alpha = 0.9) +
+  geom_text(aes(x = 3.25, y = label_pos, label = label),
+            size = 3.5, fontface = "bold", color = "white",
+            family = "serif") +
+  scale_fill_manual(values = c(col_A, col_B)) +
+  coord_polar(theta = "y") +
+  xlim(c(1, 4)) +
+  labs(title    = "D. Class size distribution",
+       subtitle = "Unconditional class membership probabilities") +
+  theme_void(base_family = "serif") +
+  theme(
+    plot.title    = element_text(face = "bold", size = 12,
+                                 hjust = 0.5,
+                                 margin = margin(b = 4)),
+    plot.subtitle = element_text(size = 10, color = "grey40",
+                                 hjust = 0.5),
+    legend.position = "none"
+  )
+
+print(p4)
+
+ggsave("LC_plot_D_classsize.pdf",  plot = p4,
+       width = 10, height = 10, units = "cm", device = cairo_pdf)
+ggsave("LC_plot_D_classsize.tiff", plot = p4,
+       width = 10, height = 10, units = "cm", dpi = 600,
+       compression = "lzw")
+
+cat("Plot D saved\n")
+cat("\nTodos Graphics have been printed and saved.\n")
+```
